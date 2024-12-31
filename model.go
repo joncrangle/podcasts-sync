@@ -31,8 +31,7 @@ type model struct {
 	drivePodcasts    list.Model
 	driveSelector    list.Model
 	help             help.Model
-	keys             keyMap
-	popupKeys        popupKeyMap
+	keys             ui.KeyMap
 	progress         progress.Model
 	currentDrive     USBDrive
 	drives           []USBDrive
@@ -45,23 +44,14 @@ type model struct {
 }
 
 func initialModel() model {
-	sp := spinner.New()
-	sp.Spinner = spinner.Dot
-	sp.Style = spinnerStyle
-	driveList := list.New([]list.Item{}, list.NewDefaultDelegate(), 0, 0)
-	driveList.SetShowStatusBar(false)
-	driveList.SetFilteringEnabled(false)
-	driveList.Title = "USB Drives"
-
 	return model{
-		macPodcasts:   ui.newPodcastList("Local Podcasts"),
-		drivePodcasts: ui.newPodcastList("Drive Podcasts"),
-		driveSelector: driveList,
-		keys:          keys,
-		help:          help.New(),
-		popupKeys:     popupKeys,
-		progress:      progress.New(progress.WithDefaultGradient()),
-		spinner:       sp,
+		macPodcasts:   ui.CreateList("Mac Podcasts", "mac"),
+		drivePodcasts: ui.CreateList("Drive Podcasts", "drive"),
+		driveSelector: ui.CreateList("USB Drives", "select"),
+		keys:          ui.Keys,
+		help:          ui.CreateHelp(),
+		progress:      ui.CreateProgress(),
+		spinner:       ui.CreateSpinner(),
 		focusIndex:    0,
 	}
 }
@@ -88,18 +78,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 		horizontalMargins := 4
-		listWidth := (msg.Width - horizontalMargins) / 2
-		listHeight := msg.Height - 15 // Space for drive selector, progress bar and help
+		topMargin := 4
+		bottomMargin := 4
+		progressHeight := 6
+
+		contentWidth := m.width - horizontalMargins
+		contentHeight := m.height - topMargin - progressHeight - bottomMargin
+		listHeight := contentHeight
+
+		if m.transferring {
+			listHeight -= progressHeight
+			m.progress.Width = contentWidth
+		}
+
+		listWidth := contentWidth / 2
 
 		m.macPodcasts.SetSize(listWidth, listHeight)
+		m.macPodcasts.Styles.NoItems = lipgloss.NewStyle().Width(listWidth)
 		m.drivePodcasts.SetSize(listWidth, listHeight)
-		m.driveSelector.SetSize(msg.Width-horizontalMargins, 10)
-		m.progress.Width = msg.Width - horizontalMargins
-		m.help.Width = msg.Width
+		m.drivePodcasts.Styles.NoItems = lipgloss.NewStyle().Width(listWidth)
 
 		if m.state == stateChoosingDrive {
 			m.driveSelector.SetSize(60, 10) // Popup size
+		} else {
+			m.driveSelector.SetSize(contentWidth, topMargin)
 		}
+
+		m.help.Width = contentWidth
+
+		return m, nil
 
 	case driveUpdatedMsg:
 		items := make([]list.Item, len(msg))
@@ -153,10 +160,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch {
-		case key.Matches(msg, keys.Quit):
+		case key.Matches(msg, ui.Keys.Quit):
 			return m, tea.Quit
 
-		case key.Matches(msg, keys.Escape):
+		case key.Matches(msg, ui.Keys.Escape):
 			if m.state == stateChoosingDrive {
 				m.state = stateNormal
 			}
@@ -165,17 +172,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 
-		case key.Matches(msg, keys.SelectDrive):
+		case key.Matches(msg, ui.Keys.SelectDrive):
 			m.state = stateChoosingDrive
 			return m, nil
 
-		case key.Matches(msg, keys.Tab):
+		case key.Matches(msg, ui.Keys.Refresh):
+			return m, nil
+
+		case key.Matches(msg, ui.Keys.Left):
+			m.focusIndex = 0
+			return m, nil
+
+		case key.Matches(msg, ui.Keys.Right):
+			m.focusIndex = 1
+			return m, nil
+
+		case key.Matches(msg, ui.Keys.Tab):
 			m.focusIndex = (m.focusIndex + 1) % 2
 			return m, nil
 
 		//TODO: handle all keys
 		// and handle escape to exit drive selection
-		case key.Matches(msg, keys.Space):
+		case key.Matches(msg, ui.Keys.Space):
 			// Toggle selection of current item
 			if m.focusIndex == 0 {
 				if i, ok := m.macPodcasts.SelectedItem().(PodcastEpisode); ok {
@@ -190,7 +208,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-		case key.Matches(msg, keys.Sync):
+		case key.Matches(msg, ui.Keys.Sync):
 			if !m.transferring {
 				m.transferring = true
 				return m, startSync(m.macPodcasts.Items(), m.currentDrive)
@@ -199,7 +217,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.state == stateChoosingDrive {
-			if key.Matches(msg, keys.Enter) {
+			if key.Matches(msg, ui.Keys.Enter) {
 				if i := m.driveSelector.SelectedItem(); i != nil {
 					m.currentDrive = i.(USBDrive)
 					m.state = stateNormal
@@ -254,24 +272,24 @@ func (m model) View() string {
 			driveInfo = "No drives detected"
 		}
 	}
-	s += driveStyle.Render(driveInfo) + "\n\n"
+	s += ui.DriveStyle(driveInfo) + "\n\n"
 
 	if m.errorMsg != "" {
-		s += errorStyle.Render(m.errorMsg) + "\n\n"
+		s += ui.ErrorStyle.Render(m.errorMsg) + "\n\n"
 	}
 
 	// Podcast lists
 	if m.focusIndex == 0 {
-		leftStyle = focusedStyle
-		rightStyle = noStyleStyle
+		ui.LeftStyle = ui.FocusedStyle
+		ui.RightStyle = ui.NoStyleStyle
 	} else {
-		leftStyle = noStyleStyle
-		rightStyle = focusedStyle
+		ui.LeftStyle = ui.NoStyleStyle
+		ui.RightStyle = ui.FocusedStyle
 	}
 
-	macList := leftStyle.Render(m.macPodcasts.View())
-	driveList := rightStyle.Render(m.drivePodcasts.View())
-	lists := listStyle(lipgloss.JoinHorizontal(lipgloss.Top, macList, driveList))
+	macList := ui.LeftStyle.Render(m.macPodcasts.View())
+	driveList := ui.RightStyle.Render(m.drivePodcasts.View())
+	lists := lipgloss.JoinHorizontal(lipgloss.Top, macList, strings.Repeat(" ", 4), driveList)
 	s += lists + "\n\n"
 
 	// Progress bar
@@ -291,24 +309,24 @@ func (m model) View() string {
 			formatBytes(m.transferProgress.BytesTransferred),
 			formatBytes(m.transferProgress.TotalBytes),
 		)
-		s += progressStyle.Render(progressInfo)
+		s += ui.ProgressStyle(progressInfo)
 	}
 
 	// Drive selector popup
 	if m.state == stateChoosingDrive {
-		driveSelectorView := m.driveSelector.View()
-		helpView := m.help.View(m.popupKeys)
-
-		popup := popupStyle.Render(lipgloss.JoinVertical(lipgloss.Top, driveSelectorView, helpView))
+		popup := ui.PopupStyle(m.driveSelector.View())
 
 		return lipgloss.Place(m.width, m.height,
 			lipgloss.Center, lipgloss.Center,
 			popup)
 	}
 
+	//TODO: status message
+
+	// Help
 	helpView := m.help.View(m.keys)
 	height := 8 - strings.Count(s, "\n") - strings.Count(helpView, "\n")
-	s += helpStyle.Render(lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Bottom, helpView))
+	s += lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Bottom, helpView)
 
-	return s
+	return ui.AppStyle.Render(s)
 }
