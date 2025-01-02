@@ -19,6 +19,13 @@ var (
 			BorderForeground(lipgloss.Color(Pink)).
 			Width(60).
 			Align(lipgloss.Center).Render
+	FocusedStyle = lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color(Pink)).
+			Padding(1)
+	NoStyleStyle = lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			Padding(1)
 )
 
 func CreateList(title string, kind string) list.Model {

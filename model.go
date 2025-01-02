@@ -93,10 +93,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		listWidth := contentWidth / 2
 
-		m.macPodcasts.SetSize(listWidth, listHeight)
+		// m.errorMsg = fmt.Sprintf("w: %d, h: %d, cw: %d, ch: %d, lw: %d, lh: %d", m.width, m.height, contentWidth, contentHeight, listWidth, listHeight)
+
 		m.macPodcasts.Styles.NoItems = lipgloss.NewStyle().Width(listWidth)
-		m.drivePodcasts.SetSize(listWidth, listHeight)
+		m.macPodcasts.SetSize(listWidth, listHeight)
 		m.drivePodcasts.Styles.NoItems = lipgloss.NewStyle().Width(listWidth)
+		m.drivePodcasts.SetSize(listWidth, listHeight)
 
 		if m.state == stateChoosingDrive {
 			m.driveSelector.SetSize(60, 10) // Popup size

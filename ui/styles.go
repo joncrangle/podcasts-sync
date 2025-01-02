@@ -37,14 +37,7 @@ var (
 	AppStyle = lipgloss.NewStyle().
 			MarginLeft(4).MarginTop(1)
 	LeftStyle, RightStyle lipgloss.Style
-	FocusedStyle          = lipgloss.NewStyle().
-				BorderStyle(lipgloss.NormalBorder()).
-				BorderForeground(lipgloss.Color(Pink)).
-				Padding(1)
-	NoStyleStyle = lipgloss.NewStyle().
-			BorderStyle(lipgloss.NormalBorder()).
-			Padding(1)
-	StatusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color(Mauve))
+	StatusStyle           = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(Mauve))
 	ErrorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(Red))
 )
