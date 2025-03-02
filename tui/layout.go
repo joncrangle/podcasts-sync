@@ -55,6 +55,8 @@ func (m *Model) calculateListHeight(contentHeight int) int {
 		return 35
 	case m.width <= 141:
 		return 40
+	case m.width <= 157:
+		return 42
 	default:
 		return contentHeight - 7
 	}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+
 	"github.com/joncrangle/podcasts-sync/internal"
 )
 
@@ -140,6 +141,11 @@ func (m Model) createLists() string {
 	macListHeight := lipgloss.Height(m.macPodcasts.View())
 	driveListHeight := lipgloss.Height(m.drivePodcasts.View())
 	height := max(macListHeight, driveListHeight)
+	if macListHeight-height <= -len(m.macPodcasts.Items()) {
+		m.macPodcasts.SetHeight(height)
+	} else {
+		m.drivePodcasts.SetHeight(height)
+	}
 	macList := m.createMacList(height)
 	driveList := m.createDriveList(height)
 
@@ -162,7 +168,7 @@ func (m Model) createDriveList(height int) string {
 	return style.Width(m.listWidth).Height(height + 2).MarginLeft(2).Render(m.drivePodcasts.View())
 }
 
-func (m Model) createHelp(width interface{}, helpText string) string {
+func (m Model) createHelp(width any, helpText string) string {
 	var w int
 	switch v := width.(type) {
 	case int:

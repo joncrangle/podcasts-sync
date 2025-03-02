@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	// Import the SQLite driver
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 	_ "modernc.org/sqlite"
 )

@@ -13,8 +13,10 @@ type USBDrive struct {
 	Folder    string
 }
 
-func (d USBDrive) Title() string       { return d.Name }
+func (d USBDrive) Title() string { return d.Name }
+
 func (d USBDrive) Description() string { return d.MountPath }
+
 func (d USBDrive) FilterValue() string { return d.Name }
 
 type DirectoryTemplate struct {

@@ -5,6 +5,8 @@ type Debug struct {
 	DDescription string
 }
 
-func (d Debug) Title() string       { return d.DTitle }
+func (d Debug) Title() string { return d.DTitle }
+
 func (d Debug) Description() string { return d.DDescription }
+
 func (d Debug) FilterValue() string { return "" }
