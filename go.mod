@@ -1,7 +1,6 @@
 module github.com/joncrangle/podcasts-sync
 
 go 1.23.6
-
 require github.com/charmbracelet/bubbles v0.20.0
 
 require (
@@ -39,5 +38,5 @@ require (
 	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/text v0.3.8 // indirect
-	modernc.org/sqlite v1.36.0
+	modernc.org/sqlite v1.36.1
 )
