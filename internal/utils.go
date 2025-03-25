@@ -226,14 +226,14 @@ func parseEpisodeFromPath(path string, template DirectoryTemplate) (PodcastEpiso
 	// Extract date and title from matches based on their positions
 	for i, match := range matches[1:] {
 		pos := i + 1 // account for full match at index 0
-		switch {
-		case pos == placeholderPos["date"]:
+		switch pos {
+		case placeholderPos["date"]:
 			parsed, err := time.Parse(template.DateFormat, match)
 			if err != nil {
 				return episode, fmt.Errorf("failed to parse date: %w", err)
 			}
 			episode.Published = parsed
-		case pos == placeholderPos["title"]:
+		case placeholderPos["title"]:
 			episode.ZTitle = match
 			if template.SanitizeNames {
 				episode.ZTitle = strings.ReplaceAll(episode.ZTitle, "-", " ")

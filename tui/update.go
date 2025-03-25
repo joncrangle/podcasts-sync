@@ -236,13 +236,15 @@ func (m *Model) handlePodcastSelection() (tea.Model, tea.Cmd) {
 		sourceList   *[]internal.PodcastEpisode
 	)
 
-	if m.focusIndex == 0 {
+	switch m.focusIndex {
+	case 0:
 		listToUpdate = &m.macPodcasts
 		sourceList = &m.podcasts
-	} else if m.focusIndex == 1 {
+	case 1:
 		listToUpdate = &m.drivePodcasts
 		sourceList = &m.podcastsDrive
 	}
+
 	if listToUpdate != nil && sourceList != nil {
 		if selectedItem := listToUpdate.SelectedItem(); selectedItem != nil {
 			if episode, ok := selectedItem.(internal.PodcastEpisode); ok {

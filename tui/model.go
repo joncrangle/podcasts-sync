@@ -59,10 +59,7 @@ type Model struct {
 }
 
 func InitialModel() Model {
-	dbgEnabled := false
-	if os.Getenv("DEBUG") == "true" {
-		dbgEnabled = true
-	}
+	dbgEnabled := os.Getenv("DEBUG") == "true"
 	return Model{
 		loading:          Loading{macPodcasts: true, drivePodcasts: true, drives: true},
 		state:            normal,
