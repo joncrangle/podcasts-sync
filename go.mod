@@ -2,7 +2,7 @@ module github.com/joncrangle/podcasts-sync
 
 go 1.23.6
 
-require github.com/charmbracelet/bubbles v0.20.0
+require github.com/charmbracelet/bubbles v0.21.0
 
 require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
