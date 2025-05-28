@@ -118,6 +118,42 @@ var keys = KeyMap{
 	),
 }
 
+type MacHelpKeyMap struct{ KeyMap }
+
+func (k MacHelpKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Space, k.Sync, k.SyncAll}
+}
+
+var macHelpKeys = MacHelpKeyMap{
+	KeyMap: KeyMap{
+		Up:      keys.Up,
+		Down:    keys.Down,
+		Tab:     keys.Tab,
+		Space:   keys.Space,
+		Sync:    keys.Sync,
+		SyncAll: keys.SyncAll,
+		Quit:    keys.Quit,
+	},
+}
+
+type DriveHelpKeyMap struct{ KeyMap }
+
+func (k DriveHelpKeyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Space, k.Delete, k.DeleteAll}
+}
+
+var driveHelpKeys = DriveHelpKeyMap{
+	KeyMap: KeyMap{
+		Up:        keys.Up,
+		Down:      keys.Down,
+		Tab:       keys.Tab,
+		Space:     keys.Space,
+		Delete:    keys.Delete,
+		DeleteAll: keys.DeleteAll,
+		Quit:      keys.Quit,
+	},
+}
+
 type ConfirmKeyMap struct {
 	Yes key.Binding
 	No  key.Binding

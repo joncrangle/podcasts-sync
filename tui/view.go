@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -157,7 +158,24 @@ func (m Model) createMacList(height int) string {
 	if m.focusIndex == 0 {
 		style = focusedListStyle
 	}
-	return style.Width(m.listWidth).Height(height + 2).MarginRight(2).Render(m.macPodcasts.View())
+
+	// Reserve 2 lines for help text at the bottom
+	helpHeight := 2
+	listHeight := height
+	macListContent := m.macPodcasts.View()
+
+	// Remove help text if present (assuming last helpHeight lines)
+	macListContentLines := strings.Split(macListContent, "\n")
+	if len(macListContentLines) > helpHeight {
+		macListContentLines = macListContentLines[:len(macListContentLines)-helpHeight]
+	}
+	macListContent = lipgloss.JoinVertical(lipgloss.Left, macListContentLines...)
+	macListContent = lipgloss.NewStyle().Height(listHeight).Render(macListContent)
+
+	help := m.createHelp(m.listWidth, m.macPodcasts.Help.View(macHelpKeys))
+
+	return style.Width(m.listWidth).Height(height + helpHeight).MarginRight(2).
+		Render(lipgloss.JoinVertical(lipgloss.Left, macListContent, help))
 }
 
 func (m Model) createDriveList(height int) string {
@@ -165,7 +183,23 @@ func (m Model) createDriveList(height int) string {
 	if m.focusIndex != 0 {
 		style = focusedListStyle
 	}
-	return style.Width(m.listWidth).Height(height + 2).MarginLeft(2).Render(m.drivePodcasts.View())
+
+	// Reserve 2 lines for help text at the bottom
+	helpHeight := 2
+	driveListContent := m.drivePodcasts.View()
+
+	// Remove help text if present (assuming last helpHeight lines)
+	driveListContentLines := strings.Split(driveListContent, "\n")
+	if len(driveListContentLines) > helpHeight {
+		driveListContentLines = driveListContentLines[:len(driveListContentLines)-helpHeight]
+	}
+	driveListContent = lipgloss.JoinVertical(lipgloss.Left, driveListContentLines...)
+	driveListContent = lipgloss.NewStyle().Height(height).Render(driveListContent)
+
+	help := m.createHelp(m.listWidth, m.drivePodcasts.Help.View(driveHelpKeys))
+
+	return style.Width(m.listWidth).Height(height + helpHeight).MarginLeft(2).
+		Render(lipgloss.JoinVertical(lipgloss.Left, driveListContent, help))
 }
 
 func (m Model) createHelp(width any, helpText string) string {

@@ -10,7 +10,7 @@ import (
 // Helper method to update window dimensions
 func (m *Model) updateLayoutDimensions() tea.Cmd {
 	horizontalMargins := 8
-	verticalMargins := 14
+	verticalMargins := 18
 
 	if m.errorMsg != "" {
 		verticalMargins += 2
@@ -41,23 +41,17 @@ func (m *Model) updateLayoutDimensions() tea.Cmd {
 
 func (m *Model) calculateListHeight(contentHeight int) int {
 	switch {
-	case m.height <= 30:
-		return 8
 	case m.height <= 35:
-		return 12
-	case m.height <= 40:
-		return 17
-	case m.width <= 80 || m.height <= 50:
+		return 0
+	case m.width <= 60 || m.height <= 40:
 		return 20
-	case m.width <= 100 || m.height <= 60:
-		return 30
-	case m.width <= 123:
-		return 35
-	case m.width <= 141:
-		return 40
-	case m.width <= 157:
-		return 42
+	case m.width <= 70 || m.height <= 50:
+		return int(float64(contentHeight) * 0.5)
+	case m.width <= 85 || m.height <= 55:
+		return int(float64(contentHeight) * 0.6)
+	case m.width <= 115 || m.height <= 60:
+		return int(float64(contentHeight) * 0.7)
 	default:
-		return contentHeight - 7
+		return int(float64(contentHeight) * 0.8)
 	}
 }

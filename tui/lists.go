@@ -163,14 +163,8 @@ func createList(title string, kind string) list.Model {
 	switch kind {
 	case "mac":
 		l.SetStatusBarItemName("podcast", "podcasts")
-		l.AdditionalShortHelpKeys = func() []key.Binding {
-			return []key.Binding{keys.Space, keys.Sync, keys.SyncAll}
-		}
 	case "drive":
 		l.SetStatusBarItemName("podcast", "podcasts")
-		l.AdditionalShortHelpKeys = func() []key.Binding {
-			return []key.Binding{keys.Space, keys.Delete, keys.DeleteAll}
-		}
 	case "select":
 		l.SetStatusBarItemName("drive", "drives")
 		l.AdditionalShortHelpKeys = func() []key.Binding {
