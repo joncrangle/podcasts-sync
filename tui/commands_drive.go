@@ -42,7 +42,7 @@ func (sm *syncManager) start(episodes []internal.PodcastEpisode, drive internal.
 	return func() tea.Msg {
 		sm.mu.Lock()
 		sm.stopping.Store(false)
-		sm.msgChan = make(chan internal.FileOp, 100)
+		sm.msgChan = make(chan internal.FileOp)
 		ch := sm.msgChan
 		sm.mu.Unlock()
 
