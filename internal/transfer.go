@@ -27,24 +27,35 @@ type FileOp struct {
 }
 
 const (
-	defaultUpdateInterval       = 50 * time.Millisecond
-	defaultSpeedSmoothingFactor = 0.15
-	minSpeedRecalcInterval      = 750 * time.Millisecond
-	minElapsedForSpeedSample    = 100 * time.Millisecond
+	defaultUpdateInterval       = 16 * time.Millisecond // 60fps
+	defaultSpeedSmoothingFactor = 0.1
+	minSpeedRecalcInterval      = 100 * time.Millisecond
+	minElapsedForSpeedSample    = 50 * time.Millisecond
 )
 
 type ProgressWriter struct {
-	total     int64
-	progress  *TransferProgress
-	ch        chan<- FileOp
-	startTime time.Time
-	lastSent  time.Time
-	stopping  atomic.Bool
+	total                  int64
+	atomicBytesTransferred int64
+	progress               *TransferProgress
+	ch                     chan<- FileOp
+	startTime              time.Time
+	lastSent               time.Time
+	stopping               atomic.Bool
 
+	// Mutex for protecting progress struct updates
+	muProgress sync.Mutex
+
+	// Speed calculation
 	muLastSample         sync.Mutex
 	lastSampleTime       time.Time
 	bytesAtLastSample    int64
 	currentSmoothedSpeed float64
+
+	// Interpolation for smooth progress
+	muInterpolation    sync.Mutex
+	lastRealBytes      int64
+	lastRealTime       time.Time
+	interpolationSpeed float64
 
 	wg       sync.WaitGroup
 	stopCh   chan struct{}
@@ -99,12 +110,21 @@ func NewProgressWriter(total int64, progress *TransferProgress, ch chan<- FileOp
 		startTime: now,
 		lastSent:  now,
 
-		// Initialize speed calculation state for the new file
+		// Initialize speed calculation state
 		lastSampleTime:       now,
-		bytesAtLastSample:    progress.BytesTransferred, // Start sampling from current known transferred
-		currentSmoothedSpeed: 0,                         // Reset smoothed speed for new writer
-		stopCh:               make(chan struct{}),
+		bytesAtLastSample:    progress.BytesTransferred,
+		currentSmoothedSpeed: 0,
+
+		// Initialize interpolation state
+		lastRealBytes:      progress.BytesTransferred,
+		lastRealTime:       now,
+		interpolationSpeed: 0,
+
+		stopCh: make(chan struct{}),
 	}
+
+	// Initialize atomic counter with current progress
+	atomic.StoreInt64(&pw.atomicBytesTransferred, progress.BytesTransferred)
 
 	pw.wg.Add(1)
 	go pw.senderLoop(defaultUpdateInterval, defaultSpeedSmoothingFactor)
@@ -124,17 +144,44 @@ func (pw *ProgressWriter) IsStopped() bool {
 	return pw.stopping.Load()
 }
 
-func (pw *ProgressWriter) LastUpdate() time.Time {
-	return pw.lastSent
-}
-
 func (pw *ProgressWriter) Write(p []byte) (int, error) {
 	if pw.stopping.Load() {
 		return 0, os.ErrClosed
 	}
 	n := len(p)
-	pw.progress.BytesTransferred += int64(n)
+	newBytes := atomic.AddInt64(&pw.atomicBytesTransferred, int64(n))
+
+	// Update interpolation baseline when actual data arrives
+	now := time.Now()
+	pw.muInterpolation.Lock()
+	pw.lastRealBytes = newBytes
+	pw.lastRealTime = now
+	// Use current smoothed speed for interpolation
+	pw.muLastSample.Lock()
+	pw.interpolationSpeed = pw.currentSmoothedSpeed
+	pw.muLastSample.Unlock()
+	pw.muInterpolation.Unlock()
+
 	return n, nil
+}
+
+// simulateTransfer simulates a transfer for files that already exist
+func (pw *ProgressWriter) simulateTransfer(bytes int64) {
+	if pw.stopping.Load() {
+		return
+	}
+
+	newBytes := atomic.AddInt64(&pw.atomicBytesTransferred, bytes)
+
+	// Update interpolation baseline
+	now := time.Now()
+	pw.muInterpolation.Lock()
+	pw.lastRealBytes = newBytes
+	pw.lastRealTime = now
+	pw.muInterpolation.Unlock()
+
+	// Force an immediate progress update for simulation
+	pw.performUpdateAndSend(false, defaultSpeedSmoothingFactor)
 }
 
 func (pw *ProgressWriter) senderLoop(updateInterval time.Duration, speedSmoothingFactor float64) {
@@ -151,14 +198,16 @@ func (pw *ProgressWriter) senderLoop(updateInterval time.Duration, speedSmoothin
 		case <-ticker.C:
 			if pw.stopping.Load() {
 				running = false
-				// final update will be handled by stopCh path or already occurred if transfer completed
 				continue
 			}
-			isComplete := (pw.progress.BytesTransferred >= pw.total && pw.total >= 0) || (pw.total == 0 && pw.progress.BytesTransferred == 0)
+
+			// Use actual bytes for completion check, not interpolated
+			actualBytes := atomic.LoadInt64(&pw.atomicBytesTransferred)
+			isComplete := (actualBytes >= pw.total && pw.total >= 0) || (pw.total == 0 && actualBytes == 0)
 			pw.performUpdateAndSend(isComplete, speedSmoothingFactor)
 
 			if isComplete {
-				running = false // Stop the loop
+				running = false
 			}
 		}
 	}
@@ -166,118 +215,121 @@ func (pw *ProgressWriter) senderLoop(updateInterval time.Duration, speedSmoothin
 
 func (pw *ProgressWriter) performUpdateAndSend(isFinalUpdate bool, speedSmoothingFactor float64) {
 	now := time.Now()
-	currentBytes := pw.progress.BytesTransferred
 
-	// 1. Update CurrentProgress
+	// Get actual bytes
+	actualBytes := atomic.LoadInt64(&pw.atomicBytesTransferred)
+
+	// Protect progress struct updates with mutex
+	pw.muProgress.Lock()
+
+	// Use actual bytes for reliable percentage calculation
+	pw.progress.BytesTransferred = actualBytes
+
+	// 1. Update CurrentProgress using actual bytes for accuracy
 	if pw.total > 0 {
-		pw.progress.CurrentProgress = math.Min(1.0, float64(currentBytes)/float64(pw.total))
-	} else if currentBytes == 0 { // 0 total bytes, 0 transferred (empty file)
-		pw.progress.CurrentProgress = 1.0
+		pw.progress.CurrentProgress = math.Min(1.0, float64(actualBytes)/float64(pw.total))
 	} else {
-		pw.progress.CurrentProgress = 0.0
+		// If total is 0, we're done (either empty file or completion)
+		pw.progress.CurrentProgress = 1.0
 	}
 
-	// 2. Calculate and Update Speed (EMA)
+	// 2. Calculate Speed using actual bytes (for accuracy)
 	pw.muLastSample.Lock()
 	elapsedSinceLastSample := now.Sub(pw.lastSampleTime)
-	bytesSinceLastSample := currentBytes - pw.bytesAtLastSample
+	bytesSinceLastSample := actualBytes - pw.bytesAtLastSample
 	shouldRecalculateSpeed := isFinalUpdate || elapsedSinceLastSample >= minSpeedRecalcInterval
 
 	if shouldRecalculateSpeed && elapsedSinceLastSample >= minElapsedForSpeedSample {
 		instantSpeed := 0.0
-		if elapsedSinceLastSample.Seconds() > 0 { // Avoid division by zero
+		if elapsedSinceLastSample.Seconds() > 0 {
 			instantSpeed = float64(bytesSinceLastSample) / elapsedSinceLastSample.Seconds()
 		}
-		instantSpeed = math.Max(0, instantSpeed) // Ensure non-negative
+		instantSpeed = math.Max(0, instantSpeed)
 
-		if pw.currentSmoothedSpeed == 0 && pw.bytesAtLastSample == pw.progress.StartTime.UnixNano() {
-			// Special handling for the very first sample: use overall average if available and sensible
-
+		if pw.currentSmoothedSpeed == 0 && pw.lastSampleTime.Equal(pw.progress.StartTime) {
+			// First sample: use overall average if available
 			overallElapsed := now.Sub(pw.progress.StartTime).Seconds()
-			if overallElapsed > 0.5 && (currentBytes-(pw.progress.BytesTransferred-bytesSinceLastSample)) > 0 {
-				overallSpeed := float64(currentBytes-(pw.progress.BytesTransferred-bytesSinceLastSample)) / overallElapsed
-				if pw.currentSmoothedSpeed == 0 && pw.lastSampleTime.Equal(pw.startTime) {
-					pw.currentSmoothedSpeed = overallSpeed
-				} else { // Blend instant with previous smoothed
-					pw.currentSmoothedSpeed = (speedSmoothingFactor * instantSpeed) + ((1 - speedSmoothingFactor) * pw.currentSmoothedSpeed)
-				}
+			if overallElapsed > 0.5 && actualBytes > 0 {
+				overallSpeed := float64(actualBytes) / overallElapsed
+				pw.currentSmoothedSpeed = overallSpeed
 			} else {
-				// Not enough overall data, or very first sample, use instant speed directly if previous EMA was 0
-				if pw.currentSmoothedSpeed == 0 {
-					pw.currentSmoothedSpeed = instantSpeed
-				} else {
-					pw.currentSmoothedSpeed = (speedSmoothingFactor * instantSpeed) + ((1 - speedSmoothingFactor) * pw.currentSmoothedSpeed)
-				}
+				pw.currentSmoothedSpeed = instantSpeed
 			}
 		} else {
 			// Standard EMA update
 			pw.currentSmoothedSpeed = (speedSmoothingFactor * instantSpeed) + ((1 - speedSmoothingFactor) * pw.currentSmoothedSpeed)
 		}
 
-		pw.currentSmoothedSpeed = math.Max(0, pw.currentSmoothedSpeed) // Ensure non-negative
-
-		// Update sample tracking info only if we actually used this sample for EMA
-		pw.bytesAtLastSample = currentBytes
+		pw.currentSmoothedSpeed = math.Max(0, pw.currentSmoothedSpeed)
+		pw.bytesAtLastSample = actualBytes
 		pw.lastSampleTime = now
+
+		// Update interpolation speed with new smoothed speed
+		pw.muInterpolation.Lock()
+		pw.interpolationSpeed = pw.currentSmoothedSpeed
+		pw.muInterpolation.Unlock()
+
 	} else if isFinalUpdate && pw.currentSmoothedSpeed == 0 {
-		// If it's a final update and we never got a good speed, calculate overall average as a last resort
+		// Final update fallback
 		overallElapsed := now.Sub(pw.progress.StartTime).Seconds()
 		if overallElapsed > 0 {
-			pw.currentSmoothedSpeed = math.Max(0, float64(currentBytes-(pw.progress.BytesTransferred-bytesSinceLastSample))/overallElapsed)
+			pw.currentSmoothedSpeed = math.Max(0, float64(actualBytes)/overallElapsed)
 		}
 	}
 
 	pw.progress.Speed = pw.currentSmoothedSpeed
 	pw.muLastSample.Unlock()
 
-	// 3. Calculate and Update TimeRemaining
-	if pw.progress.Speed > 1e-9 { // Check for speed effectively > 0 to avoid division by zero/inf
-		bytesRemaining := pw.total - currentBytes
+	// 3. Calculate TimeRemaining based on actual bytes remaining
+	if pw.progress.Speed > 1e-9 {
+		bytesRemaining := pw.total - actualBytes
 		if bytesRemaining <= 0 {
 			pw.progress.TimeRemaining = 0
 		} else {
 			secondsRemaining := float64(bytesRemaining) / pw.progress.Speed
-			// Cap time remaining to a very large value
-			if secondsRemaining > float64(time.Hour*24*365/time.Second) { // Cap at 1 year
+			if secondsRemaining > float64(time.Hour*24*365/time.Second) {
 				pw.progress.TimeRemaining = time.Duration(math.MaxInt64 / 2)
 			} else {
 				pw.progress.TimeRemaining = time.Duration(secondsRemaining * float64(time.Second))
 			}
 		}
-	} else if currentBytes < pw.total && pw.total > 0 {
-		pw.progress.TimeRemaining = time.Duration(math.MaxInt64) // Effectively infinite
+	} else if actualBytes < pw.total && pw.total > 0 {
+		pw.progress.TimeRemaining = time.Duration(math.MaxInt64)
 	} else {
-		pw.progress.TimeRemaining = 0 // Completed or 0 total bytes
+		pw.progress.TimeRemaining = 0
 	}
 
-	// 4. Send the update
+	// 4. Send the update - use actual bytes for completion check
 	if pw.ch != nil {
 		op := FileOp{
 			Progress: *pw.progress,
-			Complete: (currentBytes >= pw.total && pw.total >= 0) || (pw.total == 0 && currentBytes == 0),
+			Complete: (actualBytes >= pw.total && pw.total >= 0) || (pw.total == 0 && actualBytes == 0),
 			Error:    nil,
 		}
 
 		sendSuccessful := false
 		func() {
 			defer func() {
-				_ = recover() // ignore panic if channel is closed
+				if r := recover(); r != nil {
+					// Channel was closed, ignore
+					return
+				}
 			}()
 			select {
 			case pw.ch <- op:
 				sendSuccessful = true
 			case <-pw.stopCh:
-			case <-time.After(defaultUpdateInterval / 2): // Timeout
+				// Stop requested
+			case <-time.After(defaultUpdateInterval):
+				// Timeout - don't block
 			}
 		}()
+
 		if sendSuccessful {
-			// Only update lastSent if send was successful, and do it under lock
-			// if LastUpdate() could be called concurrently from a different goroutine.
-			// For simplicity here, assuming LastUpdate is not called with high concurrency
-			// against this specific write.
-			// pw.muLastSample.Lock()
 			pw.lastSent = time.Now()
-			// pw.muLastSample.Unlock()
 		}
 	}
+
+	// Unlock the progress mutex
+	pw.muProgress.Unlock()
 }
