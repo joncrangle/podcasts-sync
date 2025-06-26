@@ -139,12 +139,24 @@ func (ps *PodcastSync) StartSync(episodes []PodcastEpisode, drive USBDrive, ch c
 		episodes = updatedEpisodes
 	}
 
+	// Validate and fix missing FileSizes
+	for i, episode := range episodes {
+		if episode.Selected && episode.FileSize == 0 {
+			if filePath, err := convertFileURIToPath(episode.FilePath); err == nil {
+				if stat, err := os.Stat(filePath); err == nil {
+					episodes[i].FileSize = stat.Size()
+				}
+			}
+		}
+	}
+
 	totalBytes := calculateTotalBytes(episodes)
 	totalFiles := calculateTotalFiles(episodes)
 	progress := initializeProgress(totalBytes, totalFiles)
+	progressPtr := &progress
 
 	// Send initial progress
-	ch <- newFileOp(progress, false, nil)
+	ch <- newFileOp(*progressPtr, false, nil)
 
 	podcastDir := filepath.Join(drive.MountPath, drive.Folder)
 	if err := os.MkdirAll(podcastDir, 0o755); err != nil {
@@ -153,8 +165,8 @@ func (ps *PodcastSync) StartSync(episodes []PodcastEpisode, drive USBDrive, ch c
 		return nil
 	}
 
-	ps.progress = NewProgressWriter(totalBytes, &progress, ch)
-	go ps.syncEpisodes(episodes, podcastDir, progress, ch)
+	ps.progress = NewProgressWriter(totalBytes, progressPtr, ch)
+	go ps.syncEpisodes(episodes, podcastDir, progressPtr, ch)
 
 	return ps.progress
 }
@@ -247,7 +259,7 @@ func (ps *PodcastScanner) scanDirectory(drive USBDrive, results chan<- PodcastEp
 	})
 }
 
-func (ps *PodcastSync) syncEpisodes(episodes []PodcastEpisode, podcastDir string, progress TransferProgress, ch chan<- FileOp) {
+func (ps *PodcastSync) syncEpisodes(episodes []PodcastEpisode, podcastDir string, progress *TransferProgress, ch chan<- FileOp) {
 	defer safeClose(ch)
 
 	for _, episode := range episodes {
@@ -259,16 +271,16 @@ func (ps *PodcastSync) syncEpisodes(episodes []PodcastEpisode, podcastDir string
 			continue
 		}
 
-		if err := ps.syncEpisode(episode, podcastDir, &progress); err != nil {
+		if err := ps.syncEpisode(episode, podcastDir); err != nil {
 			safeSend(ch, newFileOp(TransferProgress{}, false, err))
 			return
 		}
 	}
 
-	safeSend(ch, newFileOp(progress, true, nil))
+	safeSend(ch, newFileOp(*progress, true, nil))
 }
 
-func (ps *PodcastSync) syncEpisode(episode PodcastEpisode, podcastDir string, progress *TransferProgress) error {
+func (ps *PodcastSync) syncEpisode(episode PodcastEpisode, podcastDir string) error {
 	filePath, err := convertFileURIToPath(episode.FilePath)
 	if err != nil {
 		return err
@@ -281,16 +293,27 @@ func (ps *PodcastSync) syncEpisode(episode PodcastEpisode, podcastDir string, pr
 
 	destPath := filepath.Join(showDir, formatEpisodeName(episode))
 	if exists, _ := fileExists(destPath); exists {
-		// File already exists - simulate the transfer through ProgressWriter for consistency
-		ps.progress.simulateTransfer(episode.FileSize)
-		progress.FilesDone++
+		// File exists - reduce the total since we won't transfer it
+		ps.progress.muProgress.Lock()
+		ps.progress.progress.TotalBytes -= episode.FileSize
+		ps.progress.progress.FilesDone++
+		// Adjust BytesTransferred to maintain the same percent complete after reducing total
+		if ps.progress.progress.TotalBytes > 0 {
+			ps.progress.progress.BytesTransferred = int64(float64(ps.progress.progress.CurrentProgress) * float64(ps.progress.progress.TotalBytes))
+		} else {
+			ps.progress.progress.BytesTransferred = 0
+		}
+		ps.progress.muProgress.Unlock()
+
+		// Let performUpdateAndSend recalculate CurrentProgress
+		ps.progress.performUpdateAndSend(false, 0.1)
 		return nil
 	}
 
-	return ps.copyEpisode(episode, filePath, destPath, progress)
+	return ps.copyEpisode(episode, filePath, destPath)
 }
 
-func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath string, progress *TransferProgress) error {
+func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath string) error {
 	// Update current file being processed (protected by mutex in ProgressWriter)
 	ps.progress.muProgress.Lock()
 	ps.progress.progress.CurrentFile = episode.ZTitle
@@ -308,6 +331,9 @@ func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath str
 	}
 	defer destFile.Close()
 
+	// Trigger a progress update at the start of the file transfer
+	ps.progress.performUpdateAndSend(false, 0.1)
+
 	if _, err := io.Copy(io.MultiWriter(destFile, ps.progress), srcFile); err != nil {
 		if ps.progress.IsStopped() {
 			ps.cleanup(destPath, filepath.Dir(destPath))
@@ -316,8 +342,10 @@ func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath str
 		return err
 	}
 
-	// Increment file counter after successful transfer
-	progress.FilesDone++
+	// Increment FilesDone on the shared progress struct
+	ps.progress.muProgress.Lock()
+	ps.progress.progress.FilesDone++
+	ps.progress.muProgress.Unlock()
 	return nil
 }
 
