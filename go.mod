@@ -42,5 +42,5 @@ require (
 	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/sys v0.34.0 // indirect
 	golang.org/x/text v0.27.0 // indirect
-	modernc.org/sqlite v1.38.0
+	modernc.org/sqlite v1.38.1
 )
