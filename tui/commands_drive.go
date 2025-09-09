@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,7 +28,7 @@ type FileOpMsg struct {
 type syncManager struct {
 	mu       sync.Mutex
 	msgChan  chan internal.FileOp
-	pw       *internal.ProgressWriter
+	tm       *internal.TransferManager
 	stopping atomic.Bool
 	syncer   *internal.PodcastSync
 }
@@ -42,30 +43,37 @@ func (sm *syncManager) start(episodes []internal.PodcastEpisode, drive internal.
 	return func() tea.Msg {
 		sm.mu.Lock()
 		sm.stopping.Store(false)
-		sm.msgChan = make(chan internal.FileOp)
+		// Larger buffer size to handle frequent progress updates smoothly
+		// With 16ms updates, we need more buffer capacity
+		sm.msgChan = make(chan internal.FileOp, 200)
 		ch := sm.msgChan
 		sm.mu.Unlock()
 
 		go func() {
 			sm.mu.Lock()
-			sm.pw = sm.syncer.StartSync(episodes, drive, ch)
+			sm.tm = sm.syncer.StartSync(episodes, drive, ch)
 			sm.mu.Unlock()
 		}()
 
-		// Wait for first message
-		msg, ok := <-ch
-		if !ok {
+		// Wait for first message with timeout to prevent hanging
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				return FileOpMsg{
+					Operation: "sync",
+					Msg:       internal.FileOp{Complete: true},
+				}
+			}
+			if msg.Error != nil {
+				return ErrMsg{msg.Error}
+			}
 			return FileOpMsg{
 				Operation: "sync",
-				Msg:       internal.FileOp{Complete: true},
+				Msg:       msg,
 			}
-		}
-		if msg.Error != nil {
-			return ErrMsg{msg.Error}
-		}
-		return FileOpMsg{
-			Operation: "sync",
-			Msg:       msg,
+		case <-time.After(5 * time.Second):
+			// Timeout waiting for first message
+			return ErrMsg{fmt.Errorf("timeout waiting for sync to start")}
 		}
 	}
 }
@@ -83,19 +91,28 @@ func (sm *syncManager) wait() tea.Cmd {
 		ch := sm.msgChan
 		sm.mu.Unlock()
 
-		msg, ok := <-ch
-		if !ok {
+		// Non-blocking read with timeout for responsiveness
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				return FileOpMsg{
+					Operation: "sync",
+					Msg:       internal.FileOp{Complete: true},
+				}
+			}
+			if msg.Error != nil {
+				return ErrMsg{msg.Error}
+			}
 			return FileOpMsg{
 				Operation: "sync",
-				Msg:       internal.FileOp{Complete: true},
+				Msg:       msg,
 			}
-		}
-		if msg.Error != nil {
-			return ErrMsg{msg.Error}
-		}
-		return FileOpMsg{
-			Operation: "sync",
-			Msg:       msg,
+		case <-time.After(16 * time.Millisecond):
+			// Return a "no update" message to keep the UI responsive
+			// Matched with progress writer interval for smooth updates
+			return tea.Tick(16*time.Millisecond, func(_ time.Time) tea.Msg {
+				return sm.wait()()
+			})()
 		}
 	}
 }
@@ -106,15 +123,18 @@ func (sm *syncManager) cancel() tea.Cmd {
 		defer sm.mu.Unlock()
 
 		sm.stopping.Store(true)
-		if sm.pw != nil {
-			sm.pw.Stop()
-			sm.pw = nil
+		if sm.tm != nil {
+			sm.tm.Stop()
+			sm.tm = nil
 		}
 		if sm.msgChan != nil {
-			close(sm.msgChan)
+			// Don't close immediately - let any pending messages drain
+			go func() {
+				time.Sleep(10 * time.Millisecond)
+				close(sm.msgChan)
+			}()
 			sm.msgChan = nil
 		}
-
 		return FileOpMsg{
 			Operation: "sync",
 			Msg:       internal.FileOp{Complete: true},
@@ -146,7 +166,6 @@ func getDrivePodcasts(drive internal.USBDrive, podcasts []internal.PodcastEpisod
 	return func() tea.Msg {
 		updatedPodcasts := make([]internal.PodcastEpisode, len(podcasts))
 		copy(updatedPodcasts, podcasts)
-
 		podcastsBySize := buildPodcastSizeMap(updatedPodcasts)
 
 		podcastsDrive, err := scanner.ScanDrive(drive, podcastsBySize)

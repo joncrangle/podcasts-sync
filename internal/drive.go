@@ -123,7 +123,7 @@ func (ps *PodcastScanner) ScanDrive(drive USBDrive, podcastsBySize map[int64][]*
 }
 
 type PodcastSync struct {
-	progress *ProgressWriter
+	tm *TransferManager
 }
 
 // Creates a new PodcastSync instance
@@ -132,7 +132,7 @@ func NewPodcastSync() *PodcastSync {
 }
 
 // Begins the podcast synchronization process
-func (ps *PodcastSync) StartSync(episodes []PodcastEpisode, drive USBDrive, ch chan<- FileOp) *ProgressWriter {
+func (ps *PodcastSync) StartSync(episodes []PodcastEpisode, drive USBDrive, ch chan<- FileOp) *TransferManager {
 	// Ensure FileSize is set for all episodes before calculating totalBytes
 	updatedEpisodes, err := LoadLocalPodcasts(episodes)
 	if err == nil {
@@ -150,14 +150,6 @@ func (ps *PodcastSync) StartSync(episodes []PodcastEpisode, drive USBDrive, ch c
 		}
 	}
 
-	totalBytes := calculateTotalBytes(episodes)
-	totalFiles := calculateTotalFiles(episodes)
-	progress := initializeProgress(totalBytes, totalFiles)
-	progressPtr := &progress
-
-	// Send initial progress
-	ch <- newFileOp(*progressPtr, false, nil)
-
 	podcastDir := filepath.Join(drive.MountPath, drive.Folder)
 	if err := os.MkdirAll(podcastDir, 0o755); err != nil {
 		ch <- newFileOp(TransferProgress{}, false, err)
@@ -165,10 +157,17 @@ func (ps *PodcastSync) StartSync(episodes []PodcastEpisode, drive USBDrive, ch c
 		return nil
 	}
 
-	ps.progress = NewProgressWriter(totalBytes, progressPtr, ch)
-	go ps.syncEpisodes(episodes, podcastDir, progressPtr, ch)
+	// Calculate actual totals based on files that need to be transferred
+	actualTotalBytes, actualTotalFiles := ps.calculateActualTotals(episodes, podcastDir)
 
-	return ps.progress
+	// Send initial progress with actual totals
+	progress := initializeProgress(actualTotalBytes, actualTotalFiles)
+	ch <- newFileOp(progress, false, nil)
+
+	ps.tm = NewTransferManager(actualTotalBytes, actualTotalFiles, ch)
+	go ps.syncEpisodes(episodes, podcastDir, ch)
+
+	return ps.tm
 }
 
 // Removes selected episodes from the drive
@@ -199,26 +198,6 @@ func (ps *PodcastSync) DeleteSelected(episodes []PodcastEpisode) FileOp {
 func isReadableDrive(path string) bool {
 	_, err := os.ReadDir(path)
 	return err == nil
-}
-
-func calculateTotalBytes(episodes []PodcastEpisode) int64 {
-	var total int64
-	for _, episode := range episodes {
-		if episode.Selected {
-			total += episode.FileSize
-		}
-	}
-	return total
-}
-
-func calculateTotalFiles(episodes []PodcastEpisode) int {
-	var total int
-	for _, episode := range episodes {
-		if episode.Selected {
-			total++
-		}
-	}
-	return total
 }
 
 func initializeProgress(totalBytes int64, totalFiles int) TransferProgress {
@@ -259,11 +238,11 @@ func (ps *PodcastScanner) scanDirectory(drive USBDrive, results chan<- PodcastEp
 	})
 }
 
-func (ps *PodcastSync) syncEpisodes(episodes []PodcastEpisode, podcastDir string, progress *TransferProgress, ch chan<- FileOp) {
+func (ps *PodcastSync) syncEpisodes(episodes []PodcastEpisode, podcastDir string, ch chan<- FileOp) {
 	defer safeClose(ch)
 
 	for _, episode := range episodes {
-		if ps.progress.IsStopped() {
+		if ps.tm.IsStopped() {
 			break
 		}
 
@@ -277,7 +256,7 @@ func (ps *PodcastSync) syncEpisodes(episodes []PodcastEpisode, podcastDir string
 		}
 	}
 
-	safeSend(ch, newFileOp(*progress, true, nil))
+	safeSend(ch, newFileOp(*ps.tm.progress, true, nil))
 }
 
 func (ps *PodcastSync) syncEpisode(episode PodcastEpisode, podcastDir string) error {
@@ -293,20 +272,7 @@ func (ps *PodcastSync) syncEpisode(episode PodcastEpisode, podcastDir string) er
 
 	destPath := filepath.Join(showDir, formatEpisodeName(episode))
 	if exists, _ := fileExists(destPath); exists {
-		// File exists - reduce the total since we won't transfer it
-		ps.progress.muProgress.Lock()
-		ps.progress.progress.TotalBytes -= episode.FileSize
-		ps.progress.progress.FilesDone++
-		// Adjust BytesTransferred to maintain the same percent complete after reducing total
-		if ps.progress.progress.TotalBytes > 0 {
-			ps.progress.progress.BytesTransferred = int64(float64(ps.progress.progress.CurrentProgress) * float64(ps.progress.progress.TotalBytes))
-		} else {
-			ps.progress.progress.BytesTransferred = 0
-		}
-		ps.progress.muProgress.Unlock()
-
-		// Let performUpdateAndSend recalculate CurrentProgress
-		ps.progress.performUpdateAndSend(false, 0.1)
+		// File exists - skip it entirely since it's not counted in totals
 		return nil
 	}
 
@@ -314,10 +280,8 @@ func (ps *PodcastSync) syncEpisode(episode PodcastEpisode, podcastDir string) er
 }
 
 func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath string) error {
-	// Update current file being processed (protected by mutex in ProgressWriter)
-	ps.progress.muProgress.Lock()
-	ps.progress.progress.CurrentFile = episode.ZTitle
-	ps.progress.muProgress.Unlock()
+	// Start tracking this file
+	ps.tm.StartFile(episode.ZTitle)
 
 	srcFile, err := os.Open(srcPath)
 	if err != nil {
@@ -331,21 +295,17 @@ func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath str
 	}
 	defer destFile.Close()
 
-	// Trigger a progress update at the start of the file transfer
-	ps.progress.performUpdateAndSend(false, 0.1)
-
-	if _, err := io.Copy(io.MultiWriter(destFile, ps.progress), srcFile); err != nil {
-		if ps.progress.IsStopped() {
+	// Copy using the transfer manager which tracks progress
+	if _, err := io.Copy(io.MultiWriter(destFile, ps.tm), srcFile); err != nil {
+		if ps.tm.IsStopped() {
 			ps.cleanup(destPath, filepath.Dir(destPath))
 			return nil
 		}
 		return err
 	}
 
-	// Increment FilesDone on the shared progress struct
-	ps.progress.muProgress.Lock()
-	ps.progress.progress.FilesDone++
-	ps.progress.muProgress.Unlock()
+	// Mark file as completed
+	ps.tm.CompleteFile(episode.FileSize)
 	return nil
 }
 
@@ -364,4 +324,27 @@ func (ps *PodcastSync) cleanupEmptyDirs(dirs map[string]bool, syncError *error) 
 			}
 		}
 	}
+}
+
+// calculateActualTotals checks which files need to be transferred and returns actual totals
+func (ps *PodcastSync) calculateActualTotals(episodes []PodcastEpisode, podcastDir string) (int64, int) {
+	var totalBytes int64
+	var totalFiles int
+
+	for _, episode := range episodes {
+		if !episode.Selected {
+			continue
+		}
+
+		showDir := filepath.Join(podcastDir, sanitizeName(episode.ShowName))
+		destPath := filepath.Join(showDir, formatEpisodeName(episode))
+
+		// Only count files that don't already exist
+		if exists, _ := fileExists(destPath); !exists {
+			totalBytes += episode.FileSize
+			totalFiles++
+		}
+	}
+
+	return totalBytes, totalFiles
 }

@@ -4,14 +4,14 @@ type PodcastMatcher struct {
 	podcastsBySize map[int64][]*PodcastEpisode
 }
 
-// Creates a new PodcastMatcher instance
+// NewPodcastMatcher creates a new PodcastMatcher instance
 func NewPodcastMatcher(podcastsBySize map[int64][]*PodcastEpisode) *PodcastMatcher {
 	return &PodcastMatcher{
 		podcastsBySize: podcastsBySize,
 	}
 }
 
-// Attempts to match a podcast with its local counterpart
+// Match attempts to match a podcast with its local counterpart
 func (pm *PodcastMatcher) Match(podcast *PodcastEpisode) error {
 	sizeMatches := pm.podcastsBySize[podcast.FileSize]
 

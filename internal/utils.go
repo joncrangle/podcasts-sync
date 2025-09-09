@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Returns a human-readable representation of a byte count
+// FormatBytes returns a human-readable representation of a byte count
 func FormatBytes(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {
@@ -28,7 +28,6 @@ func FormatBytes(bytes int64) string {
 		float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-// Returns a human-readable representation of a duration
 func formatDuration(duration time.Duration) string {
 	hours := int(duration.Hours())
 	minutes := int(duration.Minutes()) % 60
@@ -39,7 +38,6 @@ func formatDuration(duration time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", minutes, seconds)
 }
 
-// Check if a file exists
 func fileExists(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if err == nil {
@@ -51,7 +49,6 @@ func fileExists(path string) (bool, error) {
 	return false, err
 }
 
-// Check if a directory is empty
 func isDirEmpty(path string) (bool, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
@@ -60,7 +57,7 @@ func isDirEmpty(path string) (bool, error) {
 	return len(entries) == 0, nil
 }
 
-// Compare two slices of USB drive names for equality
+// USBDrivesEqual compare two slices of USB drive names for equality
 func USBDrivesEqual(a, b []USBDrive) bool {
 	if len(a) != len(b) {
 		return false
@@ -81,7 +78,6 @@ func USBDrivesEqual(a, b []USBDrive) bool {
 	return true
 }
 
-// Sanitize a string to be safe for use as a filename
 func sanitizeName(name string) string {
 	// Replace invalid characters with safe alternatives
 	replacer := strings.NewReplacer(
@@ -109,7 +105,6 @@ func sanitizeName(name string) string {
 	return name
 }
 
-// Format the name of an episode based on the template
 func formatEpisodeName(episode PodcastEpisode) string {
 	template := defaultDirTemplate
 	name := template.EpisodeFormat

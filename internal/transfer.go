@@ -20,6 +20,16 @@ type TransferProgress struct {
 	TotalFiles       int
 }
 
+type TransferManager struct {
+	totalBytes       int64
+	baseOffset       int64 // bytes completed from previous files
+	currentFileBytes int64 // bytes transferred in current file
+	progress         *TransferProgress
+	ch               chan<- FileOp
+	pw               *ProgressWriter
+	mu               sync.Mutex
+}
+
 type FileOp struct {
 	Progress TransferProgress
 	Complete bool
@@ -63,6 +73,88 @@ type ProgressWriter struct {
 	stopOnce sync.Once
 }
 
+func NewTransferManager(totalBytes int64, totalFiles int, ch chan<- FileOp) *TransferManager {
+	progress := &TransferProgress{
+		TotalBytes: totalBytes,
+		TotalFiles: totalFiles,
+		StartTime:  time.Now(),
+	}
+
+	tm := &TransferManager{
+		totalBytes: totalBytes,
+		progress:   progress,
+		ch:         ch,
+	}
+
+	// Create a progress writer that tracks continuous progress
+	tm.pw = NewProgressWriter(totalBytes, progress, ch)
+
+	return tm
+}
+
+func (tm *TransferManager) StartFile(filename string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	tm.currentFileBytes = 0
+	tm.progress.CurrentFile = filename
+
+	// Update total bytes transferred to smooth base
+	tm.progress.BytesTransferred = tm.baseOffset
+
+	// Sync the progress writer's atomic counter
+	if tm.pw != nil {
+		atomic.StoreInt64(&tm.pw.atomicBytesTransferred, tm.baseOffset)
+	}
+}
+
+func (tm *TransferManager) CompleteFile(fileSize int64) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	// Add completed file to base offset
+	tm.baseOffset += fileSize
+	tm.currentFileBytes = 0
+	tm.progress.FilesDone++
+
+	// Ensure BytesTransferred matches baseOffset
+	tm.progress.BytesTransferred = tm.baseOffset
+
+	// Sync the progress writer's atomic counter
+	if tm.pw != nil {
+		atomic.StoreInt64(&tm.pw.atomicBytesTransferred, tm.baseOffset)
+	}
+}
+
+func (tm *TransferManager) Write(p []byte) (int, error) {
+	tm.mu.Lock()
+	tm.currentFileBytes += int64(len(p))
+	// Update total bytes to baseOffset + current file progress
+	tm.progress.BytesTransferred = tm.baseOffset + tm.currentFileBytes
+	tm.mu.Unlock()
+
+	// Forward to the actual progress writer for UI updates, but also update its atomic counter
+	n, err := tm.pw.Write(p)
+	if err == nil {
+		// Sync the progress writer's atomic counter with our tracking
+		atomic.StoreInt64(&tm.pw.atomicBytesTransferred, tm.progress.BytesTransferred)
+	}
+	return n, err
+}
+
+func (tm *TransferManager) Stop() {
+	if tm.pw != nil {
+		tm.pw.Stop()
+	}
+}
+
+func (tm *TransferManager) IsStopped() bool {
+	if tm.pw != nil {
+		return tm.pw.IsStopped()
+	}
+	return false
+}
+
 func safeClose(ch chan<- FileOp) {
 	if ch != nil {
 		defer func() {
@@ -104,17 +196,17 @@ func NewProgressWriter(total int64, progress *TransferProgress, ch chan<- FileOp
 	progress.Speed = 0.0
 	progress.TimeRemaining = time.Duration(math.MaxInt64)
 
-	// Calculate meaningful thresholds for buffered updates
-	minBytesThreshold := int64(1024 * 1024) // Default 1MB
+	// For smooth updates, use smaller thresholds
+	minBytesThreshold := int64(64 * 1024) // 64KB for smooth updates
 	if total > 0 {
-		// Use 0.1% of total size or 1MB, whichever is larger
-		calculated := int64(float64(total) * 0.001) // 0.1%
+		// Use 0.05% of total size or 64KB, whichever is larger
+		calculated := int64(float64(total) * 0.0005) // 0.05%
 		if calculated > minBytesThreshold {
 			minBytesThreshold = calculated
 		}
-		// Cap at 10MB to avoid too infrequent updates for very large files
-		if minBytesThreshold > 10*1024*1024 {
-			minBytesThreshold = 10 * 1024 * 1024
+		// Cap at 1MB for very large transfers
+		if minBytesThreshold > 1024*1024 {
+			minBytesThreshold = 1024 * 1024
 		}
 	}
 
@@ -130,9 +222,9 @@ func NewProgressWriter(total int64, progress *TransferProgress, ch chan<- FileOp
 		bytesAtLastSample:    progress.BytesTransferred,
 		currentSmoothedSpeed: 0,
 
-		// Initialize buffered update thresholds
+		// Use smaller thresholds for smoother updates
 		minBytesThreshold:    minBytesThreshold,
-		minProgressThreshold: 0.01, // 1%
+		minProgressThreshold: 0.005, // 0.5% for smoother updates
 		lastSentBytes:        progress.BytesTransferred,
 		lastSentProgress:     progress.CurrentProgress,
 
@@ -165,7 +257,10 @@ func (pw *ProgressWriter) Write(p []byte) (int, error) {
 		return 0, os.ErrClosed
 	}
 	n := len(p)
-	atomic.AddInt64(&pw.atomicBytesTransferred, int64(n))
+
+	// Note: The TransferManager now controls the atomic counter
+	// so we don't update it here anymore to avoid double counting
+
 	return n, nil
 }
 

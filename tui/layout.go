@@ -27,12 +27,9 @@ func (m *Model) updateLayoutDimensions() tea.Cmd {
 	}
 
 	contentWidth := m.width - horizontalMargins
-	availableHeightForLists := m.height - reservedHeight
-
-	// Ensure reasonable minimum list height
-	if availableHeightForLists < 5 {
-		availableHeightForLists = 5
-	}
+	availableHeightForLists := max(
+		// Ensure reasonable minimum list height
+		m.height-reservedHeight, 5)
 
 	m.listWidth = contentWidth/2 - 4
 	m.listHeight = availableHeightForLists

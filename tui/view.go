@@ -100,10 +100,7 @@ func (m Model) renderNormal() string {
 	fixedHeight += 2
 
 	// Calculate remaining space for lists
-	availableForLists := m.height - fixedHeight
-	if availableForLists < 3 {
-		availableForLists = 3
-	}
+	availableForLists := max(m.height-fixedHeight, 3)
 
 	// Create lists with constrained height
 	lists := m.createListsWithConstrainedHeight(availableForLists)
@@ -121,10 +118,7 @@ func (m Model) renderNormal() string {
 	// If content is still too tall after constraining lists, reduce list height further
 	if contentHeight > m.height {
 		excessHeight := contentHeight - m.height
-		newListHeight := availableForLists - excessHeight
-		if newListHeight < 3 {
-			newListHeight = 3
-		}
+		newListHeight := max(availableForLists-excessHeight, 3)
 
 		// Recreate with even smaller list height
 		lists = m.createListsWithConstrainedHeight(newListHeight)

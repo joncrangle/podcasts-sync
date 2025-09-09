@@ -1,3 +1,4 @@
+// Package tui implements the terminal user interface for the podcasts-sync application.
 package tui
 
 import (

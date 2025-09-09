@@ -48,7 +48,7 @@ func (p PodcastEpisode) Description() string {
 
 func (p PodcastEpisode) FilterValue() string { return p.ZTitle }
 
-// Query podcast episodes from the local Apple Podcasts database
+// LoadMacPodcasts queries every podcast episodes from the local Apple Podcasts database
 func LoadMacPodcasts() ([]PodcastEpisode, error) {
 	dbPath := filepath.Join(
 		os.Getenv("HOME"),
@@ -96,7 +96,7 @@ func LoadMacPodcasts() ([]PodcastEpisode, error) {
 	return episodes, nil
 }
 
-// Fill in the file size and checksum for each episode
+// LoadLocalPodcasts fills in the file size and checksum for each episode
 func LoadLocalPodcasts(episodes []PodcastEpisode) ([]PodcastEpisode, error) {
 	var errors []error
 	for i := range episodes {
