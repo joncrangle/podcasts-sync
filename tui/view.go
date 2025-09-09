@@ -81,14 +81,32 @@ func (m Model) renderConfirm() string {
 }
 
 func (m Model) renderNormal() string {
+	// Create fixed-size components at their natural size
 	header := m.createHeader()
-	lists := m.createLists()
 	help := m.createHelp(m.width, m.help.View(m.keys))
 
 	var errorSection string
 	if m.errorMsg != "" {
 		errorSection = errorStyle(m.errorMsg)
 	}
+
+	// Calculate space used by fixed components
+	fixedHeight := lipgloss.Height(header) + lipgloss.Height(help)
+	if errorSection != "" {
+		fixedHeight += lipgloss.Height(errorSection)
+	}
+
+	// Account for appStyle margins (1 top + 1 bottom = 2)
+	fixedHeight += 2
+
+	// Calculate remaining space for lists
+	availableForLists := m.height - fixedHeight
+	if availableForLists < 3 {
+		availableForLists = 3
+	}
+
+	// Create lists with constrained height
+	lists := m.createListsWithConstrainedHeight(availableForLists)
 
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		header,
@@ -97,23 +115,62 @@ func (m Model) renderNormal() string {
 		help,
 	)
 
+	styledContent := appStyle.Render(content)
+	contentHeight := lipgloss.Height(styledContent)
+
+	// If content is still too tall after constraining lists, reduce list height further
+	if contentHeight > m.height {
+		excessHeight := contentHeight - m.height
+		newListHeight := availableForLists - excessHeight
+		if newListHeight < 3 {
+			newListHeight = 3
+		}
+
+		// Recreate with even smaller list height
+		lists = m.createListsWithConstrainedHeight(newListHeight)
+		content = lipgloss.JoinVertical(lipgloss.Left,
+			header,
+			errorSection,
+			lists,
+			help,
+		)
+		styledContent = appStyle.Render(content)
+	}
+
 	return lipgloss.Place(m.width, m.height,
 		lipgloss.Center, lipgloss.Top,
-		appStyle.Render(content))
+		styledContent)
 }
 
 func (m Model) createHeader() string {
+	title := "🎵 Podcasts Sync 🎤"
+
+	// Try three-part layout if there's enough space
 	driveInfo := m.formatDriveInfo()
 	debug := m.formatDebugInfo()
-	titleRender := headingStyle("🎵 Podcasts Sync 🎤")
+	titleRender := headingStyle(title)
 
-	title := lipgloss.PlaceHorizontal(
-		m.width-lipgloss.Width(driveInfo)-lipgloss.Width(debug)-lipgloss.Width(titleRender)-14,
-		lipgloss.Center,
-		titleRender,
-	)
+	// Calculate if we have enough space
+	totalNeeded := lipgloss.Width(driveInfo) + lipgloss.Width(debug) + lipgloss.Width(titleRender) + 9
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, driveInfo, title, debug)
+	if totalNeeded <= m.width {
+		centeredTitle := lipgloss.PlaceHorizontal(
+			m.width-lipgloss.Width(driveInfo)-lipgloss.Width(debug)-lipgloss.Width(titleRender)-9,
+			lipgloss.Center,
+			titleRender,
+		)
+
+		return lipgloss.JoinHorizontal(lipgloss.Top, driveInfo, centeredTitle, debug)
+	}
+
+	// Fallback: just center the title
+	styledTitle := headingStyle(title)
+	contentWidth := m.width - 8 // Account for appStyle margins
+
+	return lipgloss.NewStyle().
+		Width(contentWidth).
+		Align(lipgloss.Center).
+		Render(styledTitle)
 }
 
 func (m Model) formatDriveInfo() string {
@@ -133,23 +190,19 @@ func (m Model) formatDebugInfo() string {
 	return ""
 }
 
-func (m Model) createLists() string {
-	m.macPodcasts.SetSize(m.listWidth, m.listHeight)
-	m.macPodcasts.Styles.NoItems = m.macPodcasts.Styles.NoItems.Width(m.listWidth).Height(m.listHeight)
-	m.drivePodcasts.SetSize(m.listWidth, m.listHeight)
-	m.drivePodcasts.Styles.NoItems = m.drivePodcasts.Styles.NoItems.Width(m.listWidth).Height(m.listHeight)
+func (m Model) createListsWithConstrainedHeight(availableHeight int) string {
+	// Reserve space for help text that will be rendered outside the list
+	helpHeight := 2
+	viewportHeight := availableHeight - helpHeight
 
-	macListHeight := lipgloss.Height(m.macPodcasts.View())
-	driveListHeight := lipgloss.Height(m.drivePodcasts.View())
-	height := max(macListHeight, driveListHeight)
-	if macListHeight-height <= -len(m.macPodcasts.Items()) {
-		m.macPodcasts.SetHeight(height)
-	} else {
-		m.drivePodcasts.SetHeight(height)
-	}
-	macList := m.createMacList(height)
-	driveList := m.createDriveList(height)
+	// Set viewport size to fill available space minus help text
+	m.macPodcasts.SetSize(m.listWidth, viewportHeight)
+	m.macPodcasts.Styles.NoItems = m.macPodcasts.Styles.NoItems.Width(m.listWidth).Height(viewportHeight)
+	m.drivePodcasts.SetSize(m.listWidth, viewportHeight)
+	m.drivePodcasts.Styles.NoItems = m.drivePodcasts.Styles.NoItems.Width(m.listWidth).Height(viewportHeight)
 
+	macList := m.createMacList(availableHeight)
+	driveList := m.createDriveList(availableHeight)
 	return lipgloss.JoinHorizontal(lipgloss.Top, macList, driveList)
 }
 
@@ -159,23 +212,22 @@ func (m Model) createMacList(height int) string {
 		style = focusedListStyle
 	}
 
-	// Reserve 2 lines for help text at the bottom
-	helpHeight := 2
-	listHeight := height
 	macListContent := m.macPodcasts.View()
-
-	// Remove help text if present (assuming last helpHeight lines)
-	macListContentLines := strings.Split(macListContent, "\n")
-	if len(macListContentLines) > helpHeight {
-		macListContentLines = macListContentLines[:len(macListContentLines)-helpHeight]
-	}
-	macListContent = lipgloss.JoinVertical(lipgloss.Left, macListContentLines...)
-	macListContent = lipgloss.NewStyle().Height(listHeight).Render(macListContent)
-
 	help := m.createHelp(m.listWidth, m.macPodcasts.Help.View(macHelpKeys))
 
-	return style.Width(m.listWidth).Height(height + helpHeight).MarginRight(2).
-		Render(lipgloss.JoinVertical(lipgloss.Left, macListContent, help))
+	// Check if list is empty - if so, no padding needed as the list handles its own height
+	if len(m.macPodcasts.Items()) == 0 {
+		content := lipgloss.JoinVertical(lipgloss.Left, macListContent, help)
+		return style.Width(m.listWidth).Height(height).MarginRight(2).Render(content)
+	}
+
+	listContentHeight := lipgloss.Height(macListContent)
+	totalContentHeight := listContentHeight - 4
+	paddingCount := max(0, height-totalContentHeight)
+	padding := strings.Repeat("\n", paddingCount)
+
+	content := lipgloss.JoinVertical(lipgloss.Left, macListContent, padding, help)
+	return style.Width(m.listWidth).Height(height).MarginRight(2).Render(content)
 }
 
 func (m Model) createDriveList(height int) string {
@@ -184,22 +236,22 @@ func (m Model) createDriveList(height int) string {
 		style = focusedListStyle
 	}
 
-	// Reserve 2 lines for help text at the bottom
-	helpHeight := 2
 	driveListContent := m.drivePodcasts.View()
-
-	// Remove help text if present (assuming last helpHeight lines)
-	driveListContentLines := strings.Split(driveListContent, "\n")
-	if len(driveListContentLines) > helpHeight {
-		driveListContentLines = driveListContentLines[:len(driveListContentLines)-helpHeight]
-	}
-	driveListContent = lipgloss.JoinVertical(lipgloss.Left, driveListContentLines...)
-	driveListContent = lipgloss.NewStyle().Height(height).Render(driveListContent)
-
 	help := m.createHelp(m.listWidth, m.drivePodcasts.Help.View(driveHelpKeys))
 
-	return style.Width(m.listWidth).Height(height + helpHeight).MarginLeft(2).
-		Render(lipgloss.JoinVertical(lipgloss.Left, driveListContent, help))
+	// Check if list is empty - if so, no padding needed as the list handles its own height
+	if len(m.drivePodcasts.Items()) == 0 {
+		content := lipgloss.JoinVertical(lipgloss.Left, driveListContent, help)
+		return style.Width(m.listWidth).Height(height).MarginLeft(2).Render(content)
+	}
+
+	listContentHeight := lipgloss.Height(driveListContent)
+	totalContentHeight := listContentHeight - 4
+	paddingCount := max(0, height-totalContentHeight)
+	padding := strings.Repeat("\n", paddingCount)
+
+	content := lipgloss.JoinVertical(lipgloss.Left, driveListContent, padding, help)
+	return style.Width(m.listWidth).Height(height).MarginLeft(2).Render(content)
 }
 
 func (m Model) createHelp(width any, helpText string) string {
