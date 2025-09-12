@@ -14,7 +14,6 @@ type TransferProgress struct {
 	BytesTransferred int64
 	TotalBytes       int64
 	Speed            float64 // bytes per second
-	TimeRemaining    time.Duration
 	StartTime        time.Time
 	FilesDone        int
 	TotalFiles       int
@@ -38,9 +37,9 @@ type FileOp struct {
 
 const (
 	defaultUpdateInterval       = 33 * time.Millisecond // 30fps
-	defaultSpeedSmoothingFactor = 0.1
-	minSpeedRecalcInterval      = 100 * time.Millisecond
-	minElapsedForSpeedSample    = 50 * time.Millisecond
+	defaultSpeedSmoothingFactor = 0.2                   // Moderate smoothing
+	minSpeedRecalcInterval      = 200 * time.Millisecond
+	minElapsedForSpeedSample    = 200 * time.Millisecond
 	maxTimeBetweenUpdates       = 1 * time.Second // Force update after this time
 )
 
@@ -194,7 +193,6 @@ func NewProgressWriter(total int64, progress *TransferProgress, ch chan<- FileOp
 		progress.CurrentProgress = 0.0
 	}
 	progress.Speed = 0.0
-	progress.TimeRemaining = time.Duration(math.MaxInt64)
 
 	// For smooth updates, use smaller thresholds
 	minBytesThreshold := int64(64 * 1024) // 64KB for smooth updates
@@ -318,7 +316,7 @@ func (pw *ProgressWriter) senderLoop(updateInterval time.Duration, speedSmoothin
 	}
 }
 
-func (pw *ProgressWriter) performUpdateAndSend(isFinalUpdate bool, speedSmoothingFactor float64) {
+func (pw *ProgressWriter) performUpdateAndSend(isFinalUpdate bool, _ float64) {
 	now := time.Now()
 
 	// Get actual bytes
@@ -338,31 +336,27 @@ func (pw *ProgressWriter) performUpdateAndSend(isFinalUpdate bool, speedSmoothin
 		pw.progress.CurrentProgress = 1.0
 	}
 
-	// 2. Calculate Speed using actual bytes
+	// 2. Calculate Speed - simple approach
 	pw.muLastSample.Lock()
 	elapsedSinceLastSample := now.Sub(pw.lastSampleTime)
 	bytesSinceLastSample := actualBytes - pw.bytesAtLastSample
 	shouldRecalculateSpeed := isFinalUpdate || elapsedSinceLastSample >= minSpeedRecalcInterval
 
-	if shouldRecalculateSpeed && elapsedSinceLastSample >= minElapsedForSpeedSample {
-		instantSpeed := 0.0
-		if elapsedSinceLastSample.Seconds() > 0 {
-			instantSpeed = float64(bytesSinceLastSample) / elapsedSinceLastSample.Seconds()
-		}
+	if shouldRecalculateSpeed && elapsedSinceLastSample >= minElapsedForSpeedSample && bytesSinceLastSample > 0 {
+		instantSpeed := float64(bytesSinceLastSample) / elapsedSinceLastSample.Seconds()
 		instantSpeed = math.Max(0, instantSpeed)
 
-		if pw.currentSmoothedSpeed == 0 && pw.lastSampleTime.Equal(pw.progress.StartTime) {
-			// First sample: use overall average if available
+		if pw.currentSmoothedSpeed == 0 {
+			// First speed calculation - use overall average for better accuracy
 			overallElapsed := now.Sub(pw.progress.StartTime).Seconds()
-			if overallElapsed > 0.5 && actualBytes > 0 {
-				overallSpeed := float64(actualBytes) / overallElapsed
-				pw.currentSmoothedSpeed = overallSpeed
+			if overallElapsed > 1.0 && actualBytes > 0 {
+				pw.currentSmoothedSpeed = float64(actualBytes) / overallElapsed
 			} else {
 				pw.currentSmoothedSpeed = instantSpeed
 			}
 		} else {
-			// Standard EMA update
-			pw.currentSmoothedSpeed = (speedSmoothingFactor * instantSpeed) + ((1 - speedSmoothingFactor) * pw.currentSmoothedSpeed)
+			// Use exponential moving average
+			pw.currentSmoothedSpeed = (defaultSpeedSmoothingFactor * instantSpeed) + ((1 - defaultSpeedSmoothingFactor) * pw.currentSmoothedSpeed)
 		}
 
 		pw.currentSmoothedSpeed = math.Max(0, pw.currentSmoothedSpeed)
@@ -380,26 +374,7 @@ func (pw *ProgressWriter) performUpdateAndSend(isFinalUpdate bool, speedSmoothin
 	pw.progress.Speed = pw.currentSmoothedSpeed
 	pw.muLastSample.Unlock()
 
-	// 3. Calculate TimeRemaining based on actual bytes remaining
-	if pw.progress.Speed > 1e-9 {
-		bytesRemaining := pw.total - actualBytes
-		if bytesRemaining <= 0 {
-			pw.progress.TimeRemaining = 0
-		} else {
-			secondsRemaining := float64(bytesRemaining) / pw.progress.Speed
-			if secondsRemaining > float64(time.Hour*24*365/time.Second) {
-				pw.progress.TimeRemaining = time.Duration(math.MaxInt64 / 2)
-			} else {
-				pw.progress.TimeRemaining = time.Duration(secondsRemaining * float64(time.Second))
-			}
-		}
-	} else if actualBytes < pw.total && pw.total > 0 {
-		pw.progress.TimeRemaining = time.Duration(math.MaxInt64)
-	} else {
-		pw.progress.TimeRemaining = 0
-	}
-
-	// 4. Send the update only if it meets our buffering criteria
+	// 3. Send the update only if it meets our buffering criteria
 	if pw.ch != nil && pw.shouldSendUpdate(actualBytes, pw.progress.CurrentProgress, isFinalUpdate) {
 		op := FileOp{
 			Progress: *pw.progress,

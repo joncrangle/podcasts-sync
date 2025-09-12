@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/joncrangle/podcasts-sync/internal"
@@ -46,6 +47,7 @@ type Model struct {
 	confirmKeys      ConfirmKeyMap
 	transferKeys     TransferKeyMap
 	progress         progress.Model
+	transferSpinner  spinner.Model
 	syncManager      *syncManager
 	podcasts         []internal.PodcastEpisode
 	podcastsDrive    []internal.PodcastEpisode
@@ -79,6 +81,7 @@ func InitialModel() Model {
 		confirmKeys:      confirmKeys,
 		transferKeys:     transferKeys,
 		progress:         createProgress(),
+		transferSpinner:  createSpinner(),
 		syncManager:      newSyncManager(),
 		podcasts:         []internal.PodcastEpisode{},
 		podcastsDrive:    []internal.PodcastEpisode{},
@@ -98,5 +101,6 @@ func (m Model) Init() tea.Cmd {
 		getMacPodcasts,
 		getDrives,
 		pollDrivesCmd(5000), // Poll drives every 5 seconds
+		m.transferSpinner.Tick,
 	)
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/joncrangle/podcasts-sync/internal"
@@ -40,6 +41,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case progress.FrameMsg:
 		progressModel, cmd := m.progress.Update(msg)
 		m.progress = progressModel.(progress.Model)
+		return m, cmd
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.transferSpinner, cmd = m.transferSpinner.Update(msg)
 		return m, cmd
 	}
 	return m, nil

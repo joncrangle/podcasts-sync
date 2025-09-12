@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -42,7 +41,7 @@ func (m Model) renderDebug() string {
 }
 
 func (m Model) renderTransfer() string {
-	progressBar := m.progress.View()
+	progressBar := m.renderProgressWithSpinner()
 	progressInfo := m.formatProgressInfo(progressBar)
 	help := m.createHelp(progressBar, m.transferHelp.View(m.transferKeys))
 
@@ -56,18 +55,30 @@ func (m Model) renderTransfer() string {
 	return m.centerInWindow(popup)
 }
 
+func (m Model) renderProgressWithSpinner() string {
+	// Get the basic progress bar
+	progressBar := m.progress.View()
+
+	// Only show spinner during active transfer
+	if m.state == transferring && m.transferProgress.CurrentProgress < 1.0 {
+		// Add spinner next to the progress bar
+		spinner := m.transferSpinner.View()
+		return lipgloss.JoinHorizontal(lipgloss.Center, progressBar, " ", spinner)
+	}
+
+	return progressBar
+}
+
 func (m Model) formatProgressInfo(progressBar string) string {
 	return progressInfoStyle.Width(lipgloss.Width(progressBar)).Render(fmt.Sprintf(
 		"\nTransferring: %s\n"+
 			"Progress: %d/%d files\n"+
 			"Speed: %.1f MB/s\n"+
-			"Remaining: %s\n"+
 			"Transferred: %s / %s\n",
 		m.transferProgress.CurrentFile,
 		m.transferProgress.FilesDone,
 		m.transferProgress.TotalFiles,
 		m.transferProgress.Speed/1024/1024,
-		m.transferProgress.TimeRemaining.Round(time.Second),
 		internal.FormatBytes(m.transferProgress.BytesTransferred),
 		internal.FormatBytes(m.transferProgress.TotalBytes),
 	))
