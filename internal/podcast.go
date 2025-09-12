@@ -12,6 +12,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// AppleEpochOffset is the difference between Apple's epoch (2001-01-01) and Unix epoch (1970-01-01)
+const AppleEpochOffset = 978307200
+
 type PodcastEpisode struct {
 	ZTitle    string
 	ShowName  string
@@ -88,7 +91,7 @@ func LoadMacPodcasts() ([]PodcastEpisode, error) {
 			return nil, err
 		}
 
-		e.Published = time.Unix((pubDate + 978307200), 0)
+		e.Published = time.Unix((pubDate + AppleEpochOffset), 0)
 		e.Duration = time.Duration(duration) * time.Second
 		episodes = append(episodes, e)
 	}
@@ -102,7 +105,7 @@ func LoadLocalPodcasts(episodes []PodcastEpisode) ([]PodcastEpisode, error) {
 	for i := range episodes {
 		filePath, err := convertFileURIToPath(episodes[i].FilePath)
 		if err != nil {
-			errors = append(errors, err)
+			errors = append(errors, fmt.Errorf("failed to convert file URI for episode %s: %w", episodes[i].ZTitle, err))
 			continue
 		}
 
@@ -117,7 +120,7 @@ func LoadLocalPodcasts(episodes []PodcastEpisode) ([]PodcastEpisode, error) {
 	}
 
 	if len(errors) > 0 {
-		return episodes, fmt.Errorf("failed to load local podcasts: %v", errors)
+		return episodes, fmt.Errorf("errors loading local podcasts: %v", errors)
 	}
 	return episodes, nil
 }

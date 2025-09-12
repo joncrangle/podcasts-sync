@@ -188,15 +188,7 @@ func (m *Model) handleSync(msg FileOpMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.Msg.Complete {
-		for i := range m.podcasts {
-			m.podcasts[i].Selected = false
-		}
-		for i := range m.macPodcasts.Items() {
-			if ep, ok := m.macPodcasts.Items()[i].(internal.PodcastEpisode); ok {
-				ep.Selected = false
-				m.macPodcasts.Items()[i] = ep
-			}
-		}
+		m.clearAllSelections()
 		m.state = normal
 		m.progress.SetPercent(0)
 		m.transferProgress = internal.TransferProgress{}
@@ -279,15 +271,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case key.Matches(msg, keys.Escape):
 		if m.state == transferring {
-			for i := range m.podcasts {
-				m.podcasts[i].Selected = false
-			}
-			for i := range m.macPodcasts.Items() {
-				if ep, ok := m.macPodcasts.Items()[i].(internal.PodcastEpisode); ok {
-					ep.Selected = false
-					m.macPodcasts.Items()[i] = ep
-				}
-			}
+			m.clearAllSelections()
 			m.state = normal
 			m.progress.SetPercent(0)
 			m.loading.drivePodcasts = true
@@ -338,6 +322,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, keys.Left):
 		m.focusIndex = 0
+		return m, nil
 	case key.Matches(msg, keys.Right):
 		m.focusIndex = 1
 		return m, nil
@@ -423,4 +408,18 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// clearAllSelections clears the selected state for all episodes
+func (m *Model) clearAllSelections() {
+	for i := range m.podcasts {
+		m.podcasts[i].Selected = false
+	}
+	items := m.macPodcasts.Items()
+	for i := range items {
+		if ep, ok := items[i].(internal.PodcastEpisode); ok {
+			ep.Selected = false
+			items[i] = ep
+		}
+	}
 }

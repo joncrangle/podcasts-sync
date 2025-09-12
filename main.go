@@ -23,9 +23,10 @@ func main() {
 		os.Exit(0)
 	}
 
-	p := tea.NewProgram(tui.InitialModel(), tea.WithAltScreen())
+	initialModel := tui.InitialModel()
+	p := tea.NewProgram(initialModel, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Println("Error running program:", err)
+		fmt.Printf("Failed to start TUI application: %v\n", err)
 		os.Exit(1)
 	}
 }

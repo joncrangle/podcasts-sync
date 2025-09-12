@@ -320,7 +320,7 @@ func (ps *PodcastSync) cleanupEmptyDirs(dirs map[string]bool, syncError *error) 
 	for dir := range dirs {
 		if dirErr := os.Remove(dir); dirErr != nil {
 			if !os.IsNotExist(dirErr) && *syncError == nil {
-				continue
+				*syncError = dirErr
 			}
 		}
 	}
