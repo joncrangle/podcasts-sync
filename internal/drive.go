@@ -39,7 +39,7 @@ type DriveManager struct {
 	template    DirectoryTemplate
 }
 
-// Creates a new DriveManager instance
+// NewDriveManager creates a new DriveManager instance
 func NewDriveManager(volumesPath string, template DirectoryTemplate) *DriveManager {
 	if template == (DirectoryTemplate{}) {
 		template = defaultDirTemplate
@@ -50,7 +50,7 @@ func NewDriveManager(volumesPath string, template DirectoryTemplate) *DriveManag
 	}
 }
 
-// Finds all mounted USB drives except Macintosh HD
+// DetectDrives finds all mounted USB drives except Macintosh HD
 func (dm *DriveManager) DetectDrives() ([]USBDrive, error) {
 	entries, err := os.ReadDir(dm.volumesPath)
 	if err != nil {
@@ -80,7 +80,7 @@ type PodcastScanner struct {
 	template DirectoryTemplate
 }
 
-// Creates a new PodcastScanner instance
+// NewPodcastScanner creates a new PodcastScanner instance
 func NewPodcastScanner(template DirectoryTemplate) *PodcastScanner {
 	if template == (DirectoryTemplate{}) {
 		template = defaultDirTemplate
@@ -88,7 +88,7 @@ func NewPodcastScanner(template DirectoryTemplate) *PodcastScanner {
 	return &PodcastScanner{template: template}
 }
 
-// Scans a drive for podcasts and returns matched episodes
+// ScanDrive scans a drive for podcasts and returns matched episodes
 func (ps *PodcastScanner) ScanDrive(drive USBDrive, podcastsBySize map[int64][]*PodcastEpisode) ([]PodcastEpisode, error) {
 	podcastsChan := make(chan PodcastEpisode)
 	errorsChan := make(chan error, 1)
@@ -126,12 +126,12 @@ type PodcastSync struct {
 	tm *TransferManager
 }
 
-// Creates a new PodcastSync instance
+// NewPodcastSync creates a new PodcastSync instance
 func NewPodcastSync() *PodcastSync {
 	return &PodcastSync{}
 }
 
-// Begins the podcast synchronization process
+// StartSync begins the podcast synchronization process
 func (ps *PodcastSync) StartSync(episodes []PodcastEpisode, drive USBDrive, ch chan<- FileOp) *TransferManager {
 	// Ensure FileSize is set for all episodes before calculating totalBytes
 	updatedEpisodes, err := LoadLocalPodcasts(episodes)
@@ -170,7 +170,7 @@ func (ps *PodcastSync) StartSync(episodes []PodcastEpisode, drive USBDrive, ch c
 	return ps.tm
 }
 
-// Removes selected episodes from the drive
+// DeleteSelected removes selected episodes from the drive
 func (ps *PodcastSync) DeleteSelected(episodes []PodcastEpisode) FileOp {
 	visitedDirs := make(map[string]bool)
 	var syncError error

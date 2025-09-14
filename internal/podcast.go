@@ -1,3 +1,4 @@
+// Package internal provides internal utilities for managing podcast episodes on macOS.
 package internal
 
 import (
