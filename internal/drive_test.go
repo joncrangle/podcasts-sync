@@ -230,37 +230,112 @@ func TestUSBDrivesEqual(t *testing.T) {
 }
 
 func TestPodcastSync_DeleteSelected(t *testing.T) {
-	// Create a temporary directory structure
-	tempDir := t.TempDir()
-	testFile := filepath.Join(tempDir, "test.mp3")
+	t.Run("delete single file and empty directory", func(t *testing.T) {
+		// Create a temporary directory structure
+		tempDir := t.TempDir()
+		showDir := filepath.Join(tempDir, "TestShow")
+		err := os.MkdirAll(showDir, 0o755)
+		if err != nil {
+			t.Fatalf("Failed to create show directory: %v", err)
+		}
 
-	// Create a test file
-	err := os.WriteFile(testFile, []byte("test content"), 0o644)
-	if err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
+		testFile := filepath.Join(showDir, "test.mp3")
 
-	episodes := []PodcastEpisode{
-		{
-			ZTitle:   "Test Episode",
-			FilePath: testFile,
-			Selected: true,
-		},
-	}
+		// Create a test file
+		err = os.WriteFile(testFile, []byte("test content"), 0o644)
+		if err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
 
-	ps := NewPodcastSync()
-	result := ps.DeleteSelected(episodes)
+		episodes := []PodcastEpisode{
+			{
+				ZTitle:   "Test Episode",
+				FilePath: testFile,
+				Selected: true,
+			},
+		}
 
-	if result.Error != nil {
-		t.Errorf("Expected no error, got %v", result.Error)
-	}
+		ps := NewPodcastSync()
+		result := ps.DeleteSelected(episodes)
 
-	if !result.Complete {
-		t.Error("Expected operation to be complete")
-	}
+		if result.Error != nil {
+			t.Errorf("Expected no error, got %v", result.Error)
+		}
 
-	// Check that file was deleted
-	if _, err := os.Stat(testFile); !os.IsNotExist(err) {
-		t.Error("Expected file to be deleted")
-	}
+		if !result.Complete {
+			t.Error("Expected operation to be complete")
+		}
+
+		// Check that file was deleted
+		if _, err := os.Stat(testFile); !os.IsNotExist(err) {
+			t.Error("Expected file to be deleted")
+		}
+
+		// Check that empty directory was also deleted
+		if _, err := os.Stat(showDir); !os.IsNotExist(err) {
+			t.Error("Expected empty directory to be deleted")
+		}
+	})
+
+	t.Run("delete one file but keep non-empty directory", func(t *testing.T) {
+		// Create a temporary directory structure
+		tempDir := t.TempDir()
+		showDir := filepath.Join(tempDir, "TestShow")
+		err := os.MkdirAll(showDir, 0o755)
+		if err != nil {
+			t.Fatalf("Failed to create show directory: %v", err)
+		}
+
+		testFile1 := filepath.Join(showDir, "test1.mp3")
+		testFile2 := filepath.Join(showDir, "test2.mp3")
+
+		// Create two test files
+		err = os.WriteFile(testFile1, []byte("test content 1"), 0o644)
+		if err != nil {
+			t.Fatalf("Failed to create test file 1: %v", err)
+		}
+		err = os.WriteFile(testFile2, []byte("test content 2"), 0o644)
+		if err != nil {
+			t.Fatalf("Failed to create test file 2: %v", err)
+		}
+
+		episodes := []PodcastEpisode{
+			{
+				ZTitle:   "Test Episode 1",
+				FilePath: testFile1,
+				Selected: true,
+			},
+			{
+				ZTitle:   "Test Episode 2",
+				FilePath: testFile2,
+				Selected: false, // Not selected for deletion
+			},
+		}
+
+		ps := NewPodcastSync()
+		result := ps.DeleteSelected(episodes)
+
+		if result.Error != nil {
+			t.Errorf("Expected no error, got %v", result.Error)
+		}
+
+		if !result.Complete {
+			t.Error("Expected operation to be complete")
+		}
+
+		// Check that first file was deleted
+		if _, err := os.Stat(testFile1); !os.IsNotExist(err) {
+			t.Error("Expected first file to be deleted")
+		}
+
+		// Check that second file still exists
+		if _, err := os.Stat(testFile2); err != nil {
+			t.Error("Expected second file to still exist")
+		}
+
+		// Check that directory still exists (not empty)
+		if _, err := os.Stat(showDir); err != nil {
+			t.Error("Expected directory to still exist since it's not empty")
+		}
+	})
 }

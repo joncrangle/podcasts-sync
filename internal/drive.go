@@ -318,9 +318,11 @@ func (ps *PodcastSync) cleanup(filePath, dirPath string) {
 
 func (ps *PodcastSync) cleanupEmptyDirs(dirs map[string]bool, syncError *error) {
 	for dir := range dirs {
-		if dirErr := os.Remove(dir); dirErr != nil {
-			if !os.IsNotExist(dirErr) && *syncError == nil {
-				*syncError = dirErr
+		if empty, err := isDirEmpty(dir); err == nil && empty {
+			if dirErr := os.Remove(dir); dirErr != nil {
+				if !os.IsNotExist(dirErr) && *syncError == nil {
+					*syncError = dirErr
+				}
 			}
 		}
 	}
