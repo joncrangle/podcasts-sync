@@ -1,6 +1,6 @@
 module github.com/joncrangle/podcasts-sync
 
-go 1.24.5
+go 1.25.1
 
 require (
 	github.com/charmbracelet/bubbles v0.21.0
@@ -46,5 +46,5 @@ require (
 	github.com/tursodatabase/libsql-client-go v0.0.0-20240902231107-85af5b9d094d
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
-	modernc.org/sqlite v1.38.2
+	modernc.org/sqlite v1.39.0
 )
