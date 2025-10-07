@@ -147,9 +147,9 @@ var (
 	scanner      = internal.NewPodcastScanner(internal.DirectoryTemplate{})
 )
 
-func pollDrivesCmd(t time.Duration) tea.Cmd {
+func pollDrivesCmd(milliseconds int) tea.Cmd {
 	return func() tea.Msg {
-		time.Sleep(t * time.Millisecond)
+		time.Sleep(time.Duration(milliseconds) * time.Millisecond)
 		return DrivesPollMsg{}
 	}
 }

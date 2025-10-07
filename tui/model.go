@@ -99,8 +99,7 @@ func InitialModel() Model {
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		getMacPodcasts,
-		getDrives,
-		pollDrivesCmd(5000), // Poll drives every 5 seconds
+		pollDrivesCmd(0), // Check drives immediately
 		m.transferSpinner.Tick,
 	)
 }

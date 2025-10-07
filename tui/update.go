@@ -90,16 +90,24 @@ func (m *Model) handleListUpdates(msg tea.Msg) tea.Cmd {
 
 func (m *Model) handleDriveUpdate(msg DriveUpdatedMsg) (tea.Model, tea.Cmd) {
 	if m.loading.macPodcasts {
-		return m, getDrives
+		return m, nil
 	}
 
-	if internal.USBDrivesEqual(m.drives, msg) || len(msg) == 0 {
+	if internal.USBDrivesEqual(m.drives, msg) {
 		return m, nil
 	}
 
 	m.drives = msg
 	m.driveSelector.SetItems(m.createDriveItems(msg))
 	m.loading.drives = false
+
+	// Handle case when no drives are detected
+	if len(msg) == 0 {
+		m.currentDrive = internal.USBDrive{}
+		m.drivePodcasts.SetItems(nil)
+		m.podcastsDrive = nil
+		return m, nil
+	}
 
 	// Set current drive to first drive if it's not set
 	if m.currentDrive.Name == "" {
