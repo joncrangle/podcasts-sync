@@ -1,0 +1,75 @@
+name: Update Podcasts Sync Formula
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to update (without the v prefix)"
+        required: true
+        default: "0.2.1"
+permissions:
+  contents: read
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main repository
+        uses: actions/checkout@v4
+
+      - name: Get release version
+        id: get_version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION=${{ github.event.inputs.version }}
+          else
+            VERSION=${GITHUB_REF#refs/tags/v}
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download checksums file
+        id: checksums
+        run: |
+          VERSION=${{ steps.get_version.outputs.version }}
+          curl -L -o checksums.txt \
+            "https://github.com/joncrangle/podcasts-sync/releases/download/v${VERSION}/podcasts-sync_${VERSION}_checksums.txt"
+
+          # Extract ARM SHA256
+          ARM_SHA256=$(grep "Darwin_arm64.tar.gz" checksums.txt | awk '{print $1}')
+          echo "arm_sha256=$ARM_SHA256" >> $GITHUB_OUTPUT
+
+          # Extract Intel SHA256
+          INTEL_SHA256=$(grep "Darwin_x86_64.tar.gz" checksums.txt | awk '{print $1}')
+          echo "intel_sha256=$INTEL_SHA256" >> $GITHUB_OUTPUT
+
+      - name: Clone Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: joncrangle/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Update formula
+        run: |
+          FORMULA=tap/Formula/podcasts-sync.rb
+          VERSION=${{ steps.get_version.outputs.version }}
+          ARM_SHA256=${{ steps.checksums.outputs.arm_sha256 }}
+          INTEL_SHA256=${{ steps.checksums.outputs.intel_sha256 }}
+
+          # Update version number
+          sed -i "s/version \"[0-9.]\+\"/version \"${VERSION}\"/" $FORMULA
+
+          # Update ARM SHA
+          sed -i "/Darwin_arm64.tar.gz/,/sha256/ s|sha256 \".*\"|sha256 \"${ARM_SHA256}\"|" $FORMULA
+
+          # Update Intel SHA
+          sed -i "/Darwin_x86_64.tar.gz/,/sha256/ s|sha256 \".*\"|sha256 \"${INTEL_SHA256}\"|" $FORMULA
+
+      - name: Commit and push
+        run: |
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/podcasts-sync.rb
+          git commit -m "Update podcasts-sync to v${{ steps.get_version.outputs.version }}"
+          git push
