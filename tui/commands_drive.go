@@ -128,12 +128,18 @@ func (sm *syncManager) cancel() tea.Cmd {
 			sm.tm = nil
 		}
 		if sm.msgChan != nil {
+			// Capture channel before clearing it to avoid race
+			ch := sm.msgChan
+			sm.msgChan = nil
 			// Don't close immediately - let any pending messages drain
 			go func() {
 				time.Sleep(10 * time.Millisecond)
-				close(sm.msgChan)
+				// Safe close - only this goroutine has access to ch
+				defer func() {
+					_ = recover() // Ignore panic from closing already-closed channel
+				}()
+				close(ch)
 			}()
-			sm.msgChan = nil
 		}
 		return FileOpMsg{
 			Operation: "sync",

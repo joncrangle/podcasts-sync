@@ -1,3 +1,5 @@
+// Package internal provides core functionality for podcast synchronization,
+// including USB drive detection, podcast matching, and file transfer progress tracking.
 package internal
 
 import (
@@ -8,6 +10,8 @@ import (
 	"time"
 )
 
+// TransferProgress represents the current state of a file transfer operation.
+// All fields are safe to read, but writes should be coordinated through TransferManager.
 type TransferProgress struct {
 	CurrentFile      string
 	CurrentProgress  float64
@@ -19,6 +23,9 @@ type TransferProgress struct {
 	TotalFiles       int
 }
 
+// TransferManager coordinates file transfer progress tracking across multiple files.
+// It maintains accurate byte counts and delegates UI updates to ProgressWriter.
+// Safe for concurrent use - all public methods are protected by mutex or atomic operations.
 type TransferManager struct {
 	totalBytes       int64
 	baseOffset       int64 // bytes completed from previous files
@@ -29,6 +36,7 @@ type TransferManager struct {
 	mu               sync.Mutex
 }
 
+// FileOp represents a file operation update sent through channels.
 type FileOp struct {
 	Progress TransferProgress
 	Complete bool
@@ -36,13 +44,26 @@ type FileOp struct {
 }
 
 const (
-	defaultUpdateInterval       = 33 * time.Millisecond // 30fps
-	defaultSpeedSmoothingFactor = 0.2                   // Moderate smoothing
-	minSpeedRecalcInterval      = 200 * time.Millisecond
-	minElapsedForSpeedSample    = 200 * time.Millisecond
-	maxTimeBetweenUpdates       = 1 * time.Second // Force update after this time
+	// Update frequency and timing
+	defaultUpdateInterval    = 33 * time.Millisecond  // 30fps for smooth UI updates
+	maxTimeBetweenUpdates    = 1 * time.Second        // force update if no change detected
+	minSpeedRecalcInterval   = 200 * time.Millisecond // minimum time between speed recalculations
+	minElapsedForSpeedSample = 200 * time.Millisecond // minimum elapsed time for valid speed sample
+
+	// Speed calculation
+	defaultSpeedSmoothingFactor = 0.2 // moderate exponential smoothing (lower = smoother, higher = more responsive)
+
+	// Progress update thresholds for reducing unnecessary UI updates
+	minBytesThresholdBase    = 32 * 1024  // 32KB base threshold
+	maxBytesThreshold        = 512 * 1024 // 512KB maximum threshold
+	bytesThresholdPercent    = 0.0005     // 0.05% of total bytes
+	progressThresholdPercent = 0.003      // 0.3% progress change
 )
 
+// ProgressWriter handles asynchronous progress updates and speed calculations.
+// It runs a background goroutine that periodically sends progress updates through a channel.
+// Thread-safe: uses atomic operations for byte counting and mutexes for progress updates.
+// IMPORTANT: Callers MUST call Stop() to clean up the background goroutine.
 type ProgressWriter struct {
 	total                  int64
 	atomicBytesTransferred int64
@@ -55,13 +76,13 @@ type ProgressWriter struct {
 	// Mutex for protecting progress struct updates
 	muProgress sync.Mutex
 
-	// Speed calculation
+	// Speed calculation state
 	muLastSample         sync.Mutex
 	lastSampleTime       time.Time
 	bytesAtLastSample    int64
 	currentSmoothedSpeed float64
 
-	// Buffered updates
+	// Update throttling to reduce unnecessary UI updates
 	lastSentBytes        int64
 	lastSentProgress     float64
 	minBytesThreshold    int64
@@ -72,6 +93,11 @@ type ProgressWriter struct {
 	stopOnce sync.Once
 }
 
+// NewTransferManager creates a new TransferManager for tracking file transfer progress.
+// It automatically starts a background ProgressWriter for UI updates.
+// totalBytes: total bytes to transfer across all files
+// totalFiles: total number of files to transfer
+// ch: channel for sending progress updates (caller owns, TransferManager will not close it)
 func NewTransferManager(totalBytes int64, totalFiles int, ch chan<- FileOp) *TransferManager {
 	progress := &TransferProgress{
 		TotalBytes: totalBytes,
@@ -85,68 +111,97 @@ func NewTransferManager(totalBytes int64, totalFiles int, ch chan<- FileOp) *Tra
 		ch:         ch,
 	}
 
-	// Create a progress writer that tracks continuous progress
 	tm.pw = NewProgressWriter(totalBytes, progress, ch)
 
 	return tm
 }
 
+// StartFile marks the beginning of a new file transfer.
+// Resets current file progress and updates the progress display.
 func (tm *TransferManager) StartFile(filename string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
 	tm.currentFileBytes = 0
-	tm.progress.CurrentFile = filename
 
-	// Update total bytes transferred to smooth base
-	tm.progress.BytesTransferred = tm.baseOffset
+	// Update progress struct safely (ProgressWriter also reads this)
+	if tm.pw != nil {
+		tm.pw.muProgress.Lock()
+		tm.progress.CurrentFile = filename
+		tm.progress.BytesTransferred = tm.baseOffset
+		tm.pw.muProgress.Unlock()
+	} else {
+		tm.progress.CurrentFile = filename
+		tm.progress.BytesTransferred = tm.baseOffset
+	}
 
-	// Sync the progress writer's atomic counter
 	if tm.pw != nil {
 		atomic.StoreInt64(&tm.pw.atomicBytesTransferred, tm.baseOffset)
 	}
 }
 
+// CompleteFile marks a file transfer as complete and updates base offset.
 func (tm *TransferManager) CompleteFile(fileSize int64) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
-	// Add completed file to base offset
 	tm.baseOffset += fileSize
 	tm.currentFileBytes = 0
-	tm.progress.FilesDone++
 
-	// Ensure BytesTransferred matches baseOffset
-	tm.progress.BytesTransferred = tm.baseOffset
+	// Update progress struct safely
+	if tm.pw != nil {
+		tm.pw.muProgress.Lock()
+		tm.progress.FilesDone++
+		tm.progress.BytesTransferred = tm.baseOffset
+		tm.pw.muProgress.Unlock()
+	} else {
+		tm.progress.FilesDone++
+		tm.progress.BytesTransferred = tm.baseOffset
+	}
 
-	// Sync the progress writer's atomic counter
 	if tm.pw != nil {
 		atomic.StoreInt64(&tm.pw.atomicBytesTransferred, tm.baseOffset)
 	}
 }
 
+// Write implements io.Writer for tracking bytes transferred during file copy.
+// This method is called by io.Copy and similar functions.
 func (tm *TransferManager) Write(p []byte) (int, error) {
+	n := len(p)
+
+	// Update our tracking
 	tm.mu.Lock()
-	tm.currentFileBytes += int64(len(p))
-	// Update total bytes to baseOffset + current file progress
-	tm.progress.BytesTransferred = tm.baseOffset + tm.currentFileBytes
+	tm.currentFileBytes += int64(n)
+	newTotal := tm.baseOffset + tm.currentFileBytes
+
+	// Update progress struct safely
+	if tm.pw != nil {
+		tm.pw.muProgress.Lock()
+		tm.progress.BytesTransferred = newTotal
+		tm.pw.muProgress.Unlock()
+	} else {
+		tm.progress.BytesTransferred = newTotal
+	}
 	tm.mu.Unlock()
 
-	// Forward to the actual progress writer for UI updates, but also update its atomic counter
-	n, err := tm.pw.Write(p)
-	if err == nil {
-		// Sync the progress writer's atomic counter with our tracking
-		atomic.StoreInt64(&tm.pw.atomicBytesTransferred, tm.progress.BytesTransferred)
+	// Update the atomic counter for the progress writer
+	if tm.pw != nil {
+		atomic.StoreInt64(&tm.pw.atomicBytesTransferred, newTotal)
 	}
-	return n, err
+
+	return n, nil
 }
 
+// Stop gracefully shuts down the progress writer.
+// Blocks until all background goroutines have exited.
+// Safe to call multiple times.
 func (tm *TransferManager) Stop() {
 	if tm.pw != nil {
 		tm.pw.Stop()
 	}
 }
 
+// IsStopped returns whether the transfer manager has been stopped.
 func (tm *TransferManager) IsStopped() bool {
 	if tm.pw != nil {
 		return tm.pw.IsStopped()
@@ -180,6 +235,9 @@ func safeSend(ch chan<- FileOp, msg FileOp) {
 	}
 }
 
+// NewProgressWriter creates a new ProgressWriter that sends periodic updates through ch.
+// Starts a background goroutine for asynchronous updates.
+// The caller must call Stop() to clean up resources.
 func NewProgressWriter(total int64, progress *TransferProgress, ch chan<- FileOp) *ProgressWriter {
 	now := time.Now()
 
@@ -194,17 +252,15 @@ func NewProgressWriter(total int64, progress *TransferProgress, ch chan<- FileOp
 	}
 	progress.Speed = 0.0
 
-	// For smooth updates, use smaller thresholds
-	minBytesThreshold := int64(64 * 1024) // 64KB for smooth updates
+	// Calculate dynamic threshold based on total size for smooth updates
+	minBytesThreshold := int64(minBytesThresholdBase)
 	if total > 0 {
-		// Use 0.05% of total size or 64KB, whichever is larger
-		calculated := int64(float64(total) * 0.0005) // 0.05%
+		calculated := int64(float64(total) * bytesThresholdPercent)
 		if calculated > minBytesThreshold {
 			minBytesThreshold = calculated
 		}
-		// Cap at 1MB for very large transfers
-		if minBytesThreshold > 1024*1024 {
-			minBytesThreshold = 1024 * 1024
+		if minBytesThreshold > maxBytesThreshold {
+			minBytesThreshold = maxBytesThreshold
 		}
 	}
 
@@ -215,29 +271,28 @@ func NewProgressWriter(total int64, progress *TransferProgress, ch chan<- FileOp
 		startTime: now,
 		lastSent:  now,
 
-		// Initialize speed calculation state
 		lastSampleTime:       now,
 		bytesAtLastSample:    progress.BytesTransferred,
 		currentSmoothedSpeed: 0,
 
-		// Use smaller thresholds for smoother updates
 		minBytesThreshold:    minBytesThreshold,
-		minProgressThreshold: 0.005, // 0.5% for smoother updates
+		minProgressThreshold: progressThresholdPercent,
 		lastSentBytes:        progress.BytesTransferred,
 		lastSentProgress:     progress.CurrentProgress,
 
 		stopCh: make(chan struct{}),
 	}
 
-	// Initialize atomic counter with current progress
 	atomic.StoreInt64(&pw.atomicBytesTransferred, progress.BytesTransferred)
 
 	pw.wg.Add(1)
-	go pw.senderLoop(defaultUpdateInterval, defaultSpeedSmoothingFactor)
+	go pw.senderLoop()
 
 	return pw
 }
 
+// Stop gracefully shuts down the progress writer's background goroutine.
+// Sends a final update before stopping. Safe to call multiple times.
 func (pw *ProgressWriter) Stop() {
 	pw.stopOnce.Do(func() {
 		pw.stopping.Store(true)
@@ -246,40 +301,41 @@ func (pw *ProgressWriter) Stop() {
 	})
 }
 
+// IsStopped returns whether the progress writer has been stopped.
 func (pw *ProgressWriter) IsStopped() bool {
 	return pw.stopping.Load()
 }
 
+// Write is a no-op implementation for interface compatibility.
+// TransferManager handles all byte counting using atomic operations.
 func (pw *ProgressWriter) Write(p []byte) (int, error) {
 	if pw.stopping.Load() {
 		return 0, os.ErrClosed
 	}
-	n := len(p)
-
-	// Note: The TransferManager now controls the atomic counter
-	// so we don't update it here anymore to avoid double counting
-
-	return n, nil
+	return len(p), nil
 }
 
+// isTransferComplete checks whether the transfer has completed.
+func (pw *ProgressWriter) isTransferComplete(actualBytes int64) bool {
+	return (actualBytes >= pw.total && pw.total > 0) || pw.total == 0
+}
+
+// shouldSendUpdate determines if a progress update should be sent based on thresholds.
 func (pw *ProgressWriter) shouldSendUpdate(currentBytes int64, currentProgress float64, isFinalUpdate bool) bool {
 	if isFinalUpdate {
 		return true
 	}
 
-	// Send if significant bytes transferred
 	bytesDiff := currentBytes - pw.lastSentBytes
 	if bytesDiff >= pw.minBytesThreshold {
 		return true
 	}
 
-	// Send if significant progress change
 	progressDiff := math.Abs(currentProgress - pw.lastSentProgress)
 	if progressDiff >= pw.minProgressThreshold {
 		return true
 	}
 
-	// Send if it's been a while (prevent stalling)
 	if time.Since(pw.lastSent) > maxTimeBetweenUpdates {
 		return true
 	}
@@ -287,56 +343,51 @@ func (pw *ProgressWriter) shouldSendUpdate(currentBytes int64, currentProgress f
 	return false
 }
 
-func (pw *ProgressWriter) senderLoop(updateInterval time.Duration, speedSmoothingFactor float64) {
+// senderLoop runs in a background goroutine, periodically sending progress updates.
+func (pw *ProgressWriter) senderLoop() {
 	defer pw.wg.Done()
-	ticker := time.NewTicker(updateInterval)
+	ticker := time.NewTicker(defaultUpdateInterval)
 	defer ticker.Stop()
 
-	running := true
-	for running {
+	for {
 		select {
 		case <-pw.stopCh:
-			running = false
-			pw.performUpdateAndSend(true, speedSmoothingFactor)
+			actualBytes := atomic.LoadInt64(&pw.atomicBytesTransferred)
+			pw.performUpdateAndSend(actualBytes, true)
+			return
 		case <-ticker.C:
 			if pw.stopping.Load() {
-				running = false
-				continue
+				return
 			}
 
-			// Use actual bytes for completion check
 			actualBytes := atomic.LoadInt64(&pw.atomicBytesTransferred)
-			isComplete := (actualBytes >= pw.total && pw.total >= 0) || (pw.total == 0 && actualBytes == 0)
-			pw.performUpdateAndSend(isComplete, speedSmoothingFactor)
+			isComplete := pw.isTransferComplete(actualBytes)
+
+			pw.performUpdateAndSend(actualBytes, isComplete)
 
 			if isComplete {
-				running = false
+				return
 			}
 		}
 	}
 }
 
-func (pw *ProgressWriter) performUpdateAndSend(isFinalUpdate bool, _ float64) {
+// performUpdateAndSend calculates progress and speed, then sends updates if thresholds are met.
+// actualBytes: the current number of bytes transferred
+// isFinalUpdate: true if this is the final update before stopping
+func (pw *ProgressWriter) performUpdateAndSend(actualBytes int64, isFinalUpdate bool) {
 	now := time.Now()
 
-	// Get actual bytes
-	actualBytes := atomic.LoadInt64(&pw.atomicBytesTransferred)
-
-	// Protect progress struct updates with mutex
 	pw.muProgress.Lock()
-
-	// Use actual bytes for accurate display
 	pw.progress.BytesTransferred = actualBytes
 
-	// 1. Update CurrentProgress using actual bytes for accuracy
 	if pw.total > 0 {
 		pw.progress.CurrentProgress = math.Min(1.0, float64(actualBytes)/float64(pw.total))
 	} else {
-		// If total is 0, we're done (either empty file or completion)
 		pw.progress.CurrentProgress = 1.0
 	}
 
-	// 2. Calculate Speed - simple approach
+	// Calculate speed
 	pw.muLastSample.Lock()
 	elapsedSinceLastSample := now.Sub(pw.lastSampleTime)
 	bytesSinceLastSample := actualBytes - pw.bytesAtLastSample
@@ -347,7 +398,6 @@ func (pw *ProgressWriter) performUpdateAndSend(isFinalUpdate bool, _ float64) {
 		instantSpeed = math.Max(0, instantSpeed)
 
 		if pw.currentSmoothedSpeed == 0 {
-			// First speed calculation - use overall average for better accuracy
 			overallElapsed := now.Sub(pw.progress.StartTime).Seconds()
 			if overallElapsed > 1.0 && actualBytes > 0 {
 				pw.currentSmoothedSpeed = float64(actualBytes) / overallElapsed
@@ -355,8 +405,8 @@ func (pw *ProgressWriter) performUpdateAndSend(isFinalUpdate bool, _ float64) {
 				pw.currentSmoothedSpeed = instantSpeed
 			}
 		} else {
-			// Use exponential moving average
-			pw.currentSmoothedSpeed = (defaultSpeedSmoothingFactor * instantSpeed) + ((1 - defaultSpeedSmoothingFactor) * pw.currentSmoothedSpeed)
+			pw.currentSmoothedSpeed = (defaultSpeedSmoothingFactor * instantSpeed) +
+				((1 - defaultSpeedSmoothingFactor) * pw.currentSmoothedSpeed)
 		}
 
 		pw.currentSmoothedSpeed = math.Max(0, pw.currentSmoothedSpeed)
@@ -364,7 +414,6 @@ func (pw *ProgressWriter) performUpdateAndSend(isFinalUpdate bool, _ float64) {
 		pw.lastSampleTime = now
 
 	} else if isFinalUpdate && pw.currentSmoothedSpeed == 0 {
-		// Final update fallback
 		overallElapsed := now.Sub(pw.progress.StartTime).Seconds()
 		if overallElapsed > 0 {
 			pw.currentSmoothedSpeed = math.Max(0, float64(actualBytes)/overallElapsed)
@@ -374,31 +423,27 @@ func (pw *ProgressWriter) performUpdateAndSend(isFinalUpdate bool, _ float64) {
 	pw.progress.Speed = pw.currentSmoothedSpeed
 	pw.muLastSample.Unlock()
 
-	// 3. Send the update only if it meets our buffering criteria
-	if pw.ch != nil && pw.shouldSendUpdate(actualBytes, pw.progress.CurrentProgress, isFinalUpdate) {
+	// Send update if needed
+	shouldSend := pw.shouldSendUpdate(actualBytes, pw.progress.CurrentProgress, isFinalUpdate)
+
+	if pw.ch != nil && shouldSend {
+		isComplete := pw.isTransferComplete(actualBytes)
 		op := FileOp{
 			Progress: *pw.progress,
-			Complete: (actualBytes >= pw.total && pw.total >= 0) || (pw.total == 0 && actualBytes == 0),
+			Complete: isComplete,
 			Error:    nil,
 		}
 
+		// Send with timeout to avoid blocking
 		sendSuccessful := false
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					// Channel was closed, ignore
-					return
-				}
-			}()
+		if !pw.stopping.Load() {
 			select {
 			case pw.ch <- op:
 				sendSuccessful = true
-			case <-pw.stopCh:
-				// Stop requested
 			case <-time.After(defaultUpdateInterval):
 				// Timeout - don't block
 			}
-		}()
+		}
 
 		if sendSuccessful {
 			pw.lastSent = now
@@ -407,6 +452,5 @@ func (pw *ProgressWriter) performUpdateAndSend(isFinalUpdate bool, _ float64) {
 		}
 	}
 
-	// Unlock the progress mutex
 	pw.muProgress.Unlock()
 }

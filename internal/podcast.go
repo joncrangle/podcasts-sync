@@ -3,7 +3,6 @@ package internal
 
 import (
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,28 +99,26 @@ func LoadMacPodcasts() ([]PodcastEpisode, error) {
 	return episodes, nil
 }
 
-// LoadLocalPodcasts fills in the file size and checksum for each episode
+// LoadLocalPodcasts fills in the file size and checksum for each episode.
+// Continues processing all episodes even if some fail, setting FileSize to 0 for failed episodes.
+// Returns episodes with file sizes populated where possible, and nil error.
 func LoadLocalPodcasts(episodes []PodcastEpisode) ([]PodcastEpisode, error) {
-	var errors []error
 	for i := range episodes {
 		filePath, err := convertFileURIToPath(episodes[i].FilePath)
 		if err != nil {
-			errors = append(errors, fmt.Errorf("failed to convert file URI for episode %s: %w", episodes[i].ZTitle, err))
+			// Unable to convert URI - skip this episode
+			episodes[i].FileSize = 0
 			continue
 		}
 
 		fileInfo, err := os.Stat(filePath)
 		if err == nil {
 			episodes[i].FileSize = fileInfo.Size()
-		} else if os.IsNotExist(err) {
-			episodes[i].FileSize = 0
 		} else {
-			errors = append(errors, fmt.Errorf("failed to stat file for episode %s: %w", episodes[i].ZTitle, err))
+			// File doesn't exist or can't be accessed - set size to 0
+			episodes[i].FileSize = 0
 		}
 	}
 
-	if len(errors) > 0 {
-		return episodes, fmt.Errorf("errors loading local podcasts: %v", errors)
-	}
 	return episodes, nil
 }
