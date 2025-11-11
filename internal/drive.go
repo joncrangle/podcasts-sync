@@ -306,6 +306,11 @@ func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath str
 
 	// Mark file as completed
 	ps.tm.CompleteFile(episode.FileSize)
+
+	// Add ID3 tags with metadata from Apple Podcasts (best-effort)
+	// This won't fail the sync if tagging fails
+	_ = AddID3Tags(destPath, episode)
+
 	return nil
 }
 
