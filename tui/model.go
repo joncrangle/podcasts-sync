@@ -18,7 +18,8 @@ type state int
 const (
 	normal state = iota
 	driveSelection
-	transferring
+	syncing      // waiting for first message to check if files need transfer
+	transferring // actively transferring files
 	confirm
 	debug
 )

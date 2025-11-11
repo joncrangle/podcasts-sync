@@ -239,7 +239,14 @@ func (ps *PodcastScanner) scanDirectory(drive USBDrive, results chan<- PodcastEp
 }
 
 func (ps *PodcastSync) syncEpisodes(episodes []PodcastEpisode, podcastDir string, ch chan<- FileOp) {
-	defer safeClose(ch)
+	defer func() {
+		// Stop the TransferManager first to shut down ProgressWriter
+		if ps.tm != nil {
+			ps.tm.Stop()
+		}
+		// Now safe to close the channel
+		safeClose(ch)
+	}()
 
 	for _, episode := range episodes {
 		if ps.tm.IsStopped() {

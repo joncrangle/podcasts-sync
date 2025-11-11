@@ -434,15 +434,23 @@ func (pw *ProgressWriter) performUpdateAndSend(actualBytes int64, isFinalUpdate 
 			Error:    nil,
 		}
 
-		// Send with timeout to avoid blocking
+		// Send with timeout to avoid blocking, with panic recovery
 		sendSuccessful := false
 		if !pw.stopping.Load() {
-			select {
-			case pw.ch <- op:
-				sendSuccessful = true
-			case <-time.After(defaultUpdateInterval):
-				// Timeout - don't block
-			}
+			func() {
+				defer func() {
+					// Recover from panic if channel is closed
+					if r := recover(); r != nil {
+						return
+					}
+				}()
+				select {
+				case pw.ch <- op:
+					sendSuccessful = true
+				case <-time.After(defaultUpdateInterval):
+					// Timeout - don't block
+				}
+			}()
 		}
 
 		if sendSuccessful {

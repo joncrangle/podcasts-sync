@@ -91,28 +91,40 @@ func (sm *syncManager) wait() tea.Cmd {
 		ch := sm.msgChan
 		sm.mu.Unlock()
 
-		// Non-blocking read with timeout for responsiveness
-		select {
-		case msg, ok := <-ch:
-			if !ok {
-				return FileOpMsg{
-					Operation: "sync",
-					Msg:       internal.FileOp{Complete: true},
-				}
-			}
-			if msg.Error != nil {
-				return ErrMsg{msg.Error}
-			}
+		// Get the latest message by draining any backlog
+		var msg internal.FileOp
+		var ok bool
+
+		// First, get at least one message (blocking)
+		msg, ok = <-ch
+		if !ok {
 			return FileOpMsg{
 				Operation: "sync",
-				Msg:       msg,
+				Msg:       internal.FileOp{Complete: true},
 			}
-		case <-time.After(16 * time.Millisecond):
-			// Return a "no update" message to keep the UI responsive
-			// Matched with progress writer interval for smooth updates
-			return tea.Tick(16*time.Millisecond, func(_ time.Time) tea.Msg {
-				return sm.wait()()
-			})()
+		}
+
+		// Then drain any buffered messages to get the latest
+		for {
+			select {
+			case newMsg, stillOpen := <-ch:
+				if !stillOpen {
+					break
+				}
+				msg = newMsg
+			default:
+				// No more messages buffered
+				goto done
+			}
+		}
+
+	done:
+		if msg.Error != nil {
+			return ErrMsg{msg.Error}
+		}
+		return FileOpMsg{
+			Operation: "sync",
+			Msg:       msg,
 		}
 	}
 }

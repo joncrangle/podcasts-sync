@@ -339,3 +339,87 @@ func TestPodcastSync_DeleteSelected(t *testing.T) {
 		}
 	})
 }
+
+func TestPodcastSync_StartSync_NoFilesNeeded(t *testing.T) {
+	t.Run("sync completes cleanly when all files already exist", func(t *testing.T) {
+		// Create a temporary directory structure
+		tempDir := t.TempDir()
+		driveDir := filepath.Join(tempDir, "drive")
+		err := os.MkdirAll(driveDir, 0o755)
+		if err != nil {
+			t.Fatalf("Failed to create drive directory: %v", err)
+		}
+
+		// Create a source file
+		sourceDir := filepath.Join(tempDir, "source")
+		err = os.MkdirAll(sourceDir, 0o755)
+		if err != nil {
+			t.Fatalf("Failed to create source directory: %v", err)
+		}
+
+		sourceFile := filepath.Join(sourceDir, "test.mp3")
+		err = os.WriteFile(sourceFile, []byte("test content"), 0o644)
+		if err != nil {
+			t.Fatalf("Failed to create source file: %v", err)
+		}
+
+		// Pre-create the destination file so sync has nothing to do
+		showDir := filepath.Join(driveDir, "TestShow")
+		err = os.MkdirAll(showDir, 0o755)
+		if err != nil {
+			t.Fatalf("Failed to create show directory: %v", err)
+		}
+
+		destFile := filepath.Join(showDir, "test.mp3")
+		err = os.WriteFile(destFile, []byte("existing content"), 0o644)
+		if err != nil {
+			t.Fatalf("Failed to create dest file: %v", err)
+		}
+
+		episodes := []PodcastEpisode{
+			{
+				ZTitle:   "Test Episode",
+				ShowName: "Test Show",
+				FilePath: "file://" + sourceFile,
+				Selected: true,
+				FileSize: 12,
+			},
+		}
+
+		drive := USBDrive{
+			Name:      "TestDrive",
+			MountPath: driveDir,
+			Folder:    "",
+		}
+
+		// Create channel with buffer to receive messages
+		ch := make(chan FileOp, 10)
+
+		ps := NewPodcastSync()
+		tm := ps.StartSync(episodes, drive, ch)
+
+		if tm == nil {
+			t.Fatal("Expected non-nil TransferManager")
+		}
+
+		// Wait for messages and verify no panic occurs
+		completed := false
+		for msg := range ch {
+			if msg.Error != nil {
+				t.Errorf("Expected no error, got %v", msg.Error)
+			}
+			if msg.Complete {
+				completed = true
+			}
+		}
+
+		if !completed {
+			t.Error("Expected to receive completion message")
+		}
+
+		// Verify TransferManager was stopped properly
+		if !tm.IsStopped() {
+			t.Error("Expected TransferManager to be stopped")
+		}
+	})
+}

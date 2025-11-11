@@ -74,7 +74,7 @@ func (m *Model) handleDebug(msg DebugMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleListUpdates(msg tea.Msg) tea.Cmd {
-	if m.state == transferring || m.state == driveSelection {
+	if m.state == transferring || m.state == syncing || m.state == driveSelection {
 		return nil
 	}
 
@@ -196,6 +196,28 @@ func (m *Model) handleFileOp(msg FileOpMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleSync(msg FileOpMsg) (tea.Model, tea.Cmd) {
+	// Handle first message - check if there are actually files to transfer
+	if m.state == syncing {
+		// First message received - check if we have files to transfer
+		if msg.Msg.Progress.TotalFiles == 0 {
+			// No files to transfer - return to normal state with message
+			m.clearAllSelections()
+			m.state = normal
+			m.errorMsg = "All selected files already exist on drive"
+			m.loading.drivePodcasts = true
+			return m, getDrivePodcasts(m.currentDrive, m.podcasts)
+		}
+		// Files need transfer - transition to transferring state
+		m.state = transferring
+		m.transferProgress = msg.Msg.Progress
+		var cmds []tea.Cmd
+		cmds = append(cmds, m.progress.SetPercent(m.transferProgress.CurrentProgress), m.syncManager.wait())
+		if m.dbgEnabled {
+			cmds = append(cmds, addDebugMsg("FileOpMsg", fmt.Sprintf("Operation: %s, Starting transfer of %d files", msg.Operation, msg.Msg.Progress.TotalFiles)))
+		}
+		return m, tea.Batch(cmds...)
+	}
+
 	if m.state != transferring {
 		return m, nil
 	}
@@ -278,12 +300,12 @@ func (m *Model) handlePodcastSelection() (tea.Model, tea.Cmd) {
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.Quit):
-		if m.state == transferring {
+		if m.state == transferring || m.state == syncing {
 			return m, tea.Sequence(m.syncManager.cancel(), tea.Quit)
 		}
 		return m, tea.Quit
 	case key.Matches(msg, keys.Escape):
-		if m.state == transferring {
+		if m.state == transferring || m.state == syncing {
 			m.clearAllSelections()
 			m.state = normal
 			m.progress.SetPercent(0)
@@ -293,12 +315,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = normal
 		return m, nil
 	case key.Matches(msg, keys.SelectDrive):
-		if m.state != transferring {
+		if m.state != transferring && m.state != syncing {
 			m.state = driveSelection
 		}
 		return m, nil
 	case key.Matches(msg, keys.Debug):
-		if m.dbgEnabled && m.state != transferring {
+		if m.dbgEnabled && m.state != transferring && m.state != syncing {
 			m.state = debug
 		}
 		return m, nil
@@ -369,7 +391,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Space):
 		return m.handlePodcastSelection()
 	case key.Matches(msg, keys.Sync):
-		if m.state != transferring {
+		if m.state != transferring && m.state != syncing {
 			anySelected := false
 			for i := range m.podcasts {
 				if m.podcasts[i].Selected {
@@ -384,17 +406,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						selected = append(selected, p)
 					}
 				}
-				m.state = transferring
+				m.state = syncing
 				return m, m.syncManager.start(selected, m.currentDrive)
 			}
 		}
 		return m, nil
 	case key.Matches(msg, keys.SyncAll):
-		if m.state != transferring {
+		if m.state != transferring && m.state != syncing {
 			for i := range m.podcasts {
 				m.podcasts[i].Selected = true
 			}
-			m.state = transferring
+			m.state = syncing
 			return m, m.syncManager.start(m.podcasts, m.currentDrive)
 		}
 		return m, nil
