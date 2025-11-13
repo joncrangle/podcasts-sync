@@ -4,7 +4,6 @@ package internal
 
 import (
 	"math"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,7 +45,7 @@ type FileOp struct {
 const (
 	// Update frequency and timing
 	defaultUpdateInterval    = 33 * time.Millisecond  // 30fps for smooth UI updates
-	maxTimeBetweenUpdates    = 1 * time.Second        // force update if no change detected
+	maxTimeBetweenUpdates    = 200 * time.Millisecond // force update every 200ms for responsive UI
 	minSpeedRecalcInterval   = 200 * time.Millisecond // minimum time between speed recalculations
 	minElapsedForSpeedSample = 200 * time.Millisecond // minimum elapsed time for valid speed sample
 
@@ -66,7 +65,7 @@ const (
 // IMPORTANT: Callers MUST call Stop() to clean up the background goroutine.
 type ProgressWriter struct {
 	total                  int64
-	atomicBytesTransferred int64
+	atomicBytesTransferred atomic.Int64
 	progress               *TransferProgress
 	ch                     chan<- FileOp
 	startTime              time.Time
@@ -136,7 +135,7 @@ func (tm *TransferManager) StartFile(filename string) {
 	}
 
 	if tm.pw != nil {
-		atomic.StoreInt64(&tm.pw.atomicBytesTransferred, tm.baseOffset)
+		tm.pw.atomicBytesTransferred.Store(tm.baseOffset)
 	}
 }
 
@@ -160,7 +159,7 @@ func (tm *TransferManager) CompleteFile(fileSize int64) {
 	}
 
 	if tm.pw != nil {
-		atomic.StoreInt64(&tm.pw.atomicBytesTransferred, tm.baseOffset)
+		tm.pw.atomicBytesTransferred.Store(tm.baseOffset)
 	}
 }
 
@@ -186,7 +185,7 @@ func (tm *TransferManager) Write(p []byte) (int, error) {
 
 	// Update the atomic counter for the progress writer
 	if tm.pw != nil {
-		atomic.StoreInt64(&tm.pw.atomicBytesTransferred, newTotal)
+		tm.pw.atomicBytesTransferred.Store(newTotal)
 	}
 
 	return n, nil
@@ -283,10 +282,10 @@ func NewProgressWriter(total int64, progress *TransferProgress, ch chan<- FileOp
 		stopCh: make(chan struct{}),
 	}
 
-	atomic.StoreInt64(&pw.atomicBytesTransferred, progress.BytesTransferred)
-
 	pw.wg.Add(1)
 	go pw.senderLoop()
+
+	pw.atomicBytesTransferred.Store(progress.BytesTransferred)
 
 	return pw
 }
@@ -310,7 +309,7 @@ func (pw *ProgressWriter) IsStopped() bool {
 // TransferManager handles all byte counting using atomic operations.
 func (pw *ProgressWriter) Write(p []byte) (int, error) {
 	if pw.stopping.Load() {
-		return 0, os.ErrClosed
+		return 0, nil
 	}
 	return len(p), nil
 }
@@ -352,7 +351,7 @@ func (pw *ProgressWriter) senderLoop() {
 	for {
 		select {
 		case <-pw.stopCh:
-			actualBytes := atomic.LoadInt64(&pw.atomicBytesTransferred)
+			actualBytes := pw.atomicBytesTransferred.Load()
 			pw.performUpdateAndSend(actualBytes, true)
 			return
 		case <-ticker.C:
@@ -360,7 +359,7 @@ func (pw *ProgressWriter) senderLoop() {
 				return
 			}
 
-			actualBytes := atomic.LoadInt64(&pw.atomicBytesTransferred)
+			actualBytes := pw.atomicBytesTransferred.Load()
 			isComplete := pw.isTransferComplete(actualBytes)
 
 			pw.performUpdateAndSend(actualBytes, isComplete)
@@ -455,9 +454,14 @@ func (pw *ProgressWriter) performUpdateAndSend(actualBytes int64, isFinalUpdate 
 
 		if sendSuccessful {
 			pw.lastSent = now
-			pw.lastSentBytes = actualBytes
-			pw.lastSentProgress = pw.progress.CurrentProgress
 		}
+	}
+
+	// Always update tracking values after checking thresholds to ensure
+	// correct incremental calculations on next tick, regardless of send success
+	if shouldSend {
+		pw.lastSentBytes = actualBytes
+		pw.lastSentProgress = pw.progress.CurrentProgress
 	}
 
 	pw.muProgress.Unlock()

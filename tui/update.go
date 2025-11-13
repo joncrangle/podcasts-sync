@@ -22,6 +22,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleError(msg)
 	case DebugMsg:
 		return m.handleDebug(msg)
+	case ProgressTickMsg:
+		return m, tea.Batch(
+			m.progress.SetPercent(m.transferProgress.CurrentProgress),
+			m.syncManager.wait(),
+		)
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height

@@ -164,6 +164,13 @@ func (ps *PodcastSync) StartSync(episodes []PodcastEpisode, drive USBDrive, ch c
 	progress := initializeProgress(actualTotalBytes, actualTotalFiles)
 	ch <- newFileOp(progress, false, nil)
 
+	// Stop any existing TransferManager before creating a new one
+	// This ensures the old senderLoop goroutine is fully stopped
+	if ps.tm != nil {
+		ps.tm.Stop()
+		ps.tm = nil
+	}
+
 	ps.tm = NewTransferManager(actualTotalBytes, actualTotalFiles, ch)
 	go ps.syncEpisodes(episodes, podcastDir, ch)
 
@@ -239,17 +246,21 @@ func (ps *PodcastScanner) scanDirectory(drive USBDrive, results chan<- PodcastEp
 }
 
 func (ps *PodcastSync) syncEpisodes(episodes []PodcastEpisode, podcastDir string, ch chan<- FileOp) {
+	// Capture the current TransferManager in a local variable
+	// This prevents issues if ps.tm is overwritten by a new StartSync() call
+	tm := ps.tm
+
 	defer func() {
 		// Stop the TransferManager first to shut down ProgressWriter
-		if ps.tm != nil {
-			ps.tm.Stop()
+		if tm != nil {
+			tm.Stop()
 		}
 		// Now safe to close the channel
 		safeClose(ch)
 	}()
 
 	for _, episode := range episodes {
-		if ps.tm.IsStopped() {
+		if tm != nil && tm.IsStopped() {
 			break
 		}
 
@@ -287,7 +298,6 @@ func (ps *PodcastSync) syncEpisode(episode PodcastEpisode, podcastDir string) er
 }
 
 func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath string) error {
-	// Start tracking this file
 	ps.tm.StartFile(episode.ZTitle)
 
 	srcFile, err := os.Open(srcPath)
@@ -302,12 +312,55 @@ func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath str
 	}
 	defer destFile.Close()
 
-	// Copy using the transfer manager which tracks progress
-	if _, err := io.Copy(io.MultiWriter(destFile, ps.tm), srcFile); err != nil {
-		if ps.tm.IsStopped() {
-			ps.cleanup(destPath, filepath.Dir(destPath))
-			return nil
+	// Manual copy with periodic syncs for progress visibility
+	const bufSize = 256 * 1024           // 256KB buffer
+	const syncInterval = 4 * 1024 * 1024 // Sync every 4MB
+
+	buf := make([]byte, bufSize)
+	reader := io.TeeReader(srcFile, ps.tm)
+
+	var bytesWrittenSinceSync int64
+
+	for {
+		nr, er := reader.Read(buf)
+		if nr > 0 {
+			nw, ew := destFile.Write(buf[0:nr])
+			if ew != nil {
+				if ps.tm.IsStopped() {
+					ps.cleanup(destPath, filepath.Dir(destPath))
+					return nil
+				}
+				return ew
+			}
+			if nr != nw {
+				return io.ErrShortWrite
+			}
+
+			bytesWrittenSinceSync += int64(nw)
+
+			// Sync periodically to ensure progress is visible on slow drives
+			// without excessive performance penalty
+			if bytesWrittenSinceSync >= syncInterval {
+				if err := destFile.Sync(); err != nil {
+					return err
+				}
+				bytesWrittenSinceSync = 0
+			}
 		}
+		if er != nil {
+			if er != io.EOF {
+				if ps.tm.IsStopped() {
+					ps.cleanup(destPath, filepath.Dir(destPath))
+					return nil
+				}
+				return er
+			}
+			break
+		}
+	}
+
+	// Final sync to ensure all data is written
+	if err := destFile.Sync(); err != nil {
 		return err
 	}
 

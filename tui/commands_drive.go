@@ -18,20 +18,19 @@ type (
 		Podcasts      []internal.PodcastEpisode
 		PodcastsDrive []internal.PodcastEpisode
 	}
+	ProgressTickMsg struct{}
+	FileOpMsg       struct {
+		Operation string // "sync" or "delete"
+		Msg       internal.FileOp
+	}
+	syncManager struct {
+		mu       sync.Mutex
+		msgChan  chan internal.FileOp
+		tm       *internal.TransferManager
+		stopping atomic.Bool
+		syncer   *internal.PodcastSync
+	}
 )
-
-type FileOpMsg struct {
-	Operation string // "sync" or "delete"
-	Msg       internal.FileOp
-}
-
-type syncManager struct {
-	mu       sync.Mutex
-	msgChan  chan internal.FileOp
-	tm       *internal.TransferManager
-	stopping atomic.Bool
-	syncer   *internal.PodcastSync
-}
 
 func newSyncManager() *syncManager {
 	return &syncManager{
@@ -91,40 +90,27 @@ func (sm *syncManager) wait() tea.Cmd {
 		ch := sm.msgChan
 		sm.mu.Unlock()
 
-		// Get the latest message by draining any backlog
-		var msg internal.FileOp
-		var ok bool
-
-		// First, get at least one message (blocking)
-		msg, ok = <-ch
-		if !ok {
+		// Non-blocking read with timeout to enable continuous UI updates
+		// This allows the progress bar to re-render even when no new messages arrive
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				return FileOpMsg{
+					Operation: "sync",
+					Msg:       internal.FileOp{Complete: true},
+				}
+			}
+			if msg.Error != nil {
+				return ErrMsg{msg.Error}
+			}
 			return FileOpMsg{
 				Operation: "sync",
-				Msg:       internal.FileOp{Complete: true},
+				Msg:       msg,
 			}
-		}
-
-		// Then drain any buffered messages to get the latest
-		for {
-			select {
-			case newMsg, stillOpen := <-ch:
-				if !stillOpen {
-					break
-				}
-				msg = newMsg
-			default:
-				// No more messages buffered
-				goto done
-			}
-		}
-
-	done:
-		if msg.Error != nil {
-			return ErrMsg{msg.Error}
-		}
-		return FileOpMsg{
-			Operation: "sync",
-			Msg:       msg,
+		case <-time.After(50 * time.Millisecond):
+			// No message yet, return a tick to keep the update loop running
+			// This ensures continuous progress bar animation
+			return ProgressTickMsg{}
 		}
 	}
 }
