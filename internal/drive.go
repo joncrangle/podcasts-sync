@@ -123,12 +123,23 @@ func (ps *PodcastScanner) ScanDrive(drive USBDrive, podcastsBySize map[int64][]*
 }
 
 type PodcastSync struct {
-	tm *TransferManager
+	tm             *TransferManager
+	taggingQueue   chan taggingJob
+	taggingDone    chan struct{}
+	taggingStopped bool
+}
+
+type taggingJob struct {
+	filePath string
+	episode  PodcastEpisode
 }
 
 // NewPodcastSync creates a new PodcastSync instance
 func NewPodcastSync() *PodcastSync {
-	return &PodcastSync{}
+	return &PodcastSync{
+		taggingQueue: make(chan taggingJob, 10), // Buffer up to 10 files for tagging
+		taggingDone:  make(chan struct{}),
+	}
 }
 
 // StartSync begins the podcast synchronization process
@@ -172,6 +183,10 @@ func (ps *PodcastSync) StartSync(episodes []PodcastEpisode, drive USBDrive, ch c
 	}
 
 	ps.tm = NewTransferManager(actualTotalBytes, actualTotalFiles, ch)
+
+	// Start background tagging goroutine
+	go ps.taggingWorker()
+
 	go ps.syncEpisodes(episodes, podcastDir, ch)
 
 	return ps.tm
@@ -251,6 +266,15 @@ func (ps *PodcastSync) syncEpisodes(episodes []PodcastEpisode, podcastDir string
 	tm := ps.tm
 
 	defer func() {
+		// Close tagging queue to signal no more jobs
+		if !ps.taggingStopped {
+			close(ps.taggingQueue)
+			ps.taggingStopped = true
+		}
+
+		// Wait for all pending tagging jobs to complete
+		<-ps.taggingDone
+
 		// Stop the TransferManager first to shut down ProgressWriter
 		if tm != nil {
 			tm.Stop()
@@ -314,8 +338,8 @@ func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath str
 
 	// Copy with periodic syncs for progress visibility
 	// Using MultiWriter for atomic writes to both file and progress tracker
-	const bufSize = 256 * 1024            // 256KB buffer
-	const syncInterval = 16 * 1024 * 1024 // Sync every 16MB for better performance
+	const bufSize = 256 * 1024           // 256KB buffer
+	const syncInterval = 8 * 1024 * 1024 // Sync every 8MB for balance of performance and responsiveness
 
 	buf := make([]byte, bufSize)
 	writer := io.MultiWriter(destFile, ps.tm)
@@ -368,9 +392,15 @@ func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath str
 	// Mark file as completed
 	ps.tm.CompleteFile(episode.FileSize)
 
-	// Add ID3 tags with metadata from Apple Podcasts (best-effort)
-	// This won't fail the sync if tagging fails
-	_ = AddID3Tags(destPath, episode)
+	// Queue ID3 tagging to happen asynchronously
+	// This allows the next file to start transferring immediately
+	select {
+	case ps.taggingQueue <- taggingJob{filePath: destPath, episode: episode}:
+		// Job queued successfully
+	default:
+		// Queue is full, tag synchronously (rare case)
+		_ = AddID3Tags(destPath, episode)
+	}
 
 	return nil
 }
@@ -415,4 +445,14 @@ func (ps *PodcastSync) calculateActualTotals(episodes []PodcastEpisode, podcastD
 	}
 
 	return totalBytes, totalFiles
+}
+
+// taggingWorker processes ID3 tagging jobs in the background
+func (ps *PodcastSync) taggingWorker() {
+	defer close(ps.taggingDone)
+
+	for job := range ps.taggingQueue {
+		// Best-effort tagging - don't fail if tagging fails
+		_ = AddID3Tags(job.filePath, job.episode)
+	}
 }
