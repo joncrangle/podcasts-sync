@@ -312,19 +312,20 @@ func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath str
 	}
 	defer destFile.Close()
 
-	// Manual copy with periodic syncs for progress visibility
-	const bufSize = 256 * 1024           // 256KB buffer
-	const syncInterval = 4 * 1024 * 1024 // Sync every 4MB
+	// Copy with periodic syncs for progress visibility
+	// Using MultiWriter for atomic writes to both file and progress tracker
+	const bufSize = 256 * 1024            // 256KB buffer
+	const syncInterval = 16 * 1024 * 1024 // Sync every 16MB for better performance
 
 	buf := make([]byte, bufSize)
-	reader := io.TeeReader(srcFile, ps.tm)
+	writer := io.MultiWriter(destFile, ps.tm)
 
 	var bytesWrittenSinceSync int64
 
 	for {
-		nr, er := reader.Read(buf)
+		nr, er := srcFile.Read(buf)
 		if nr > 0 {
-			nw, ew := destFile.Write(buf[0:nr])
+			nw, ew := writer.Write(buf[0:nr])
 			if ew != nil {
 				if ps.tm.IsStopped() {
 					ps.cleanup(destPath, filepath.Dir(destPath))
@@ -338,8 +339,8 @@ func (ps *PodcastSync) copyEpisode(episode PodcastEpisode, srcPath, destPath str
 
 			bytesWrittenSinceSync += int64(nw)
 
-			// Sync periodically to ensure progress is visible on slow drives
-			// without excessive performance penalty
+			// Sync periodically to ensure progress is visible on slow USB drives
+			// Less frequent syncs (16MB) reduce blocking I/O overhead
 			if bytesWrittenSinceSync >= syncInterval {
 				if err := destFile.Sync(); err != nil {
 					return err

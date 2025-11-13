@@ -45,7 +45,7 @@ type FileOp struct {
 const (
 	// Update frequency and timing
 	defaultUpdateInterval    = 33 * time.Millisecond  // 30fps for smooth UI updates
-	maxTimeBetweenUpdates    = 200 * time.Millisecond // force update every 200ms for responsive UI
+	maxTimeBetweenUpdates    = 100 * time.Millisecond // force update every 100ms for responsive UI
 	minSpeedRecalcInterval   = 200 * time.Millisecond // minimum time between speed recalculations
 	minElapsedForSpeedSample = 200 * time.Millisecond // minimum elapsed time for valid speed sample
 
@@ -54,9 +54,9 @@ const (
 
 	// Progress update thresholds for reducing unnecessary UI updates
 	minBytesThresholdBase    = 32 * 1024  // 32KB base threshold
-	maxBytesThreshold        = 512 * 1024 // 512KB maximum threshold
-	bytesThresholdPercent    = 0.0005     // 0.05% of total bytes
-	progressThresholdPercent = 0.003      // 0.3% progress change
+	maxBytesThreshold        = 128 * 1024 // 128KB maximum threshold for responsive updates
+	bytesThresholdPercent    = 0.0001     // 0.01% of total bytes
+	progressThresholdPercent = 0.001      // 0.1% progress change
 )
 
 // ProgressWriter handles asynchronous progress updates and speed calculations.
