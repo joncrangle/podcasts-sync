@@ -275,6 +275,10 @@ func (ps *PodcastSync) syncEpisodes(episodes []PodcastEpisode, podcastDir string
 		// Wait for all pending tagging jobs to complete
 		<-ps.taggingDone
 
+		// Final cleanup pass: Remove any orphaned ID3 temp files
+		// This ensures no duplicate files remain after sync completion
+		ps.cleanupAllID3TempFiles(episodes, podcastDir)
+
 		// Stop the TransferManager first to shut down ProgressWriter
 		if tm != nil {
 			tm.Stop()
@@ -453,6 +457,24 @@ func (ps *PodcastSync) taggingWorker() {
 
 	for job := range ps.taggingQueue {
 		// Best-effort tagging - don't fail if tagging fails
+		// The AddID3Tags function includes retry logic and cleanup of temp files
 		_ = AddID3Tags(job.filePath, job.episode)
+	}
+}
+
+// cleanupAllID3TempFiles performs a final cleanup pass to remove any orphaned
+// ID3 temp files that might remain after the sync completes. This is a safety
+// measure to ensure no duplicate files are left on the drive.
+func (ps *PodcastSync) cleanupAllID3TempFiles(episodes []PodcastEpisode, podcastDir string) {
+	for _, episode := range episodes {
+		if !episode.Selected {
+			continue
+		}
+
+		showDir := filepath.Join(podcastDir, sanitizeName(episode.ShowName))
+		destPath := filepath.Join(showDir, formatEpisodeName(episode))
+
+		// Best-effort cleanup - ignore errors as this is a safety measure
+		_ = CleanupID3TempFiles(destPath)
 	}
 }
