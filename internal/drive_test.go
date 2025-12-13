@@ -338,6 +338,63 @@ func TestPodcastSync_DeleteSelected(t *testing.T) {
 			t.Error("Expected directory to still exist since it's not empty")
 		}
 	})
+
+	t.Run("delete file and directory with hidden system files", func(t *testing.T) {
+		// Create a temporary directory structure
+		tempDir := t.TempDir()
+		showDir := filepath.Join(tempDir, "TestShow")
+		err := os.MkdirAll(showDir, 0o755)
+		if err != nil {
+			t.Fatalf("Failed to create show directory: %v", err)
+		}
+
+		testFile := filepath.Join(showDir, "test.mp3")
+		dsStore := filepath.Join(showDir, ".DS_Store")
+		hiddenFile := filepath.Join(showDir, "._hidden")
+
+		// Create test files including hidden system files
+		err = os.WriteFile(testFile, []byte("test content"), 0o644)
+		if err != nil {
+			t.Fatalf("Failed to create test file: %v", err)
+		}
+		err = os.WriteFile(dsStore, []byte("ds store"), 0o644)
+		if err != nil {
+			t.Fatalf("Failed to create .DS_Store: %v", err)
+		}
+		err = os.WriteFile(hiddenFile, []byte("hidden"), 0o644)
+		if err != nil {
+			t.Fatalf("Failed to create hidden file: %v", err)
+		}
+
+		episodes := []PodcastEpisode{
+			{
+				ZTitle:   "Test Episode",
+				FilePath: testFile,
+				Selected: true,
+			},
+		}
+
+		ps := NewPodcastSync()
+		result := ps.DeleteSelected(episodes)
+
+		if result.Error != nil {
+			t.Errorf("Expected no error, got %v", result.Error)
+		}
+
+		if !result.Complete {
+			t.Error("Expected operation to be complete")
+		}
+
+		// Check that main file was deleted
+		if _, err := os.Stat(testFile); !os.IsNotExist(err) {
+			t.Error("Expected main file to be deleted")
+		}
+
+		// Check that directory was deleted (even though it had hidden files)
+		if _, err := os.Stat(showDir); !os.IsNotExist(err) {
+			t.Error("Expected directory to be deleted despite hidden system files")
+		}
+	})
 }
 
 func TestPodcastSync_StartSync_NoFilesNeeded(t *testing.T) {

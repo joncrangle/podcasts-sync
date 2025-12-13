@@ -195,9 +195,9 @@ func (ps *PodcastSync) StartSync(episodes []PodcastEpisode, drive USBDrive, ch c
 // DeleteSelected removes selected episodes from the drive
 func (ps *PodcastSync) DeleteSelected(episodes []PodcastEpisode) FileOp {
 	visitedDirs := make(map[string]bool)
-	var syncError error
+	var errors []error
 
-	// Delete files
+	// Delete files - continue even if some deletions fail
 	for _, episode := range episodes {
 		if !episode.Selected {
 			continue
@@ -206,15 +206,22 @@ func (ps *PodcastSync) DeleteSelected(episodes []PodcastEpisode) FileOp {
 		dir := filepath.Dir(episode.FilePath)
 		visitedDirs[dir] = true
 
-		if err := os.Remove(episode.FilePath); err != nil && syncError == nil {
-			syncError = err
+		if err := os.Remove(episode.FilePath); err != nil {
+			// Collect all errors instead of stopping at first one
+			errors = append(errors, err)
 		}
 	}
 
-	// Clean up empty directories
-	ps.cleanupEmptyDirs(visitedDirs, &syncError)
+	// Clean up empty directories (including hidden system files)
+	ps.cleanupEmptyDirs(visitedDirs, &errors)
 
-	return newFileOp(TransferProgress{}, true, syncError)
+	// Return first error if any occurred
+	var finalError error
+	if len(errors) > 0 {
+		finalError = errors[0]
+	}
+
+	return newFileOp(TransferProgress{}, true, finalError)
 }
 
 func isReadableDrive(path string) bool {
@@ -416,12 +423,17 @@ func (ps *PodcastSync) cleanup(filePath, dirPath string) {
 	}
 }
 
-func (ps *PodcastSync) cleanupEmptyDirs(dirs map[string]bool, syncError *error) {
+func (ps *PodcastSync) cleanupEmptyDirs(dirs map[string]bool, errors *[]error) {
 	for dir := range dirs {
+		// First, try to clean up any hidden system files
+		cleanupSystemHiddenFiles(dir)
+
+		// Check if directory is empty (ignoring hidden system files)
 		if empty, err := isDirEmpty(dir); err == nil && empty {
 			if dirErr := os.Remove(dir); dirErr != nil {
-				if !os.IsNotExist(dirErr) && *syncError == nil {
-					*syncError = dirErr
+				// Only collect errors for directories that actually exist
+				if !os.IsNotExist(dirErr) {
+					*errors = append(*errors, dirErr)
 				}
 			}
 		}

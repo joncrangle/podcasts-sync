@@ -49,12 +49,60 @@ func fileExists(path string) (bool, error) {
 	return false, err
 }
 
+// isSystemHiddenFile checks if a file is a macOS/system hidden file that should be ignored
+func isSystemHiddenFile(name string) bool {
+	hiddenFiles := []string{
+		".DS_Store",
+		".Spotlight-V100",
+		".Trashes",
+		".fseventsd",
+		".TemporaryItems",
+		".VolumeIcon.icns",
+		".com.apple.timemachine.donotpresent",
+		".DocumentRevisions-V100",
+		".PKInstallSandboxManager",
+	}
+
+	for _, hidden := range hiddenFiles {
+		if name == hidden {
+			return true
+		}
+	}
+
+	// Also check for hidden temp files
+	return strings.HasPrefix(name, "._")
+}
+
+// cleanupSystemHiddenFiles removes system hidden files from a directory
+func cleanupSystemHiddenFiles(dirPath string) {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if isSystemHiddenFile(entry.Name()) {
+			filePath := filepath.Join(dirPath, entry.Name())
+			_ = os.Remove(filePath) // Best effort - ignore errors
+		}
+	}
+}
+
 func isDirEmpty(path string) (bool, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return false, err
 	}
-	return len(entries) == 0, nil
+
+	// Count non-hidden files
+	visibleCount := 0
+	for _, entry := range entries {
+		if !isSystemHiddenFile(entry.Name()) {
+			visibleCount++
+		}
+	}
+
+	return visibleCount == 0, nil
 }
 
 // USBDrivesEqual compare two slices of USB drive names for equality
