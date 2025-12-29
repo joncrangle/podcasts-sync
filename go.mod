@@ -50,5 +50,5 @@ require (
 	github.com/tursodatabase/libsql-client-go v0.0.0-20251219100830-236aa1ff8acc
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
-	modernc.org/sqlite v1.41.0
+	modernc.org/sqlite v1.42.2
 )
