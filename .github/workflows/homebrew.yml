@@ -7,7 +7,7 @@ on:
       version:
         description: "Version to update (without the v prefix)"
         required: true
-        default: "0.2.1"
+        default: "0.3.1"
 permissions:
   contents: read
 jobs:
@@ -56,8 +56,8 @@ jobs:
           ARM_SHA256=${{ steps.checksums.outputs.arm_sha256 }}
           INTEL_SHA256=${{ steps.checksums.outputs.intel_sha256 }}
 
-          # Update version number
-          sed -i "s/version \"[0-9.]\+\"/version \"${VERSION}\"/" $FORMULA
+          # Update version in URLs
+          sed -i "s|/releases/download/v[0-9.]\+/|/releases/download/v${VERSION}/|g" $FORMULA
 
           # Update ARM SHA
           sed -i "/Darwin_arm64.tar.gz/,/sha256/ s|sha256 \".*\"|sha256 \"${ARM_SHA256}\"|" $FORMULA
