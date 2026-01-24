@@ -1,5 +1,8 @@
 # 🎵 Podcasts Sync 🎤
 
+> [!NOTE]
+> This is no longer maintained. I have duplicated its functionality with [podapple](https://github.com/joncrangle/podapple)
+
 A simple terminal app to sync audio downloaded from the Apple Podcasts app with a connected device.
 
 ![Demo](./assets/demo.gif)
